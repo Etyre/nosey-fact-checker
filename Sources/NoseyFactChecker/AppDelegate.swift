@@ -29,8 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.chatWindow.show(session: self.chat.session(for: f))
         }
         engine.onNewFindings = { [weak self] _ in self?.refreshIcon() }
-        engine.$findings.sink { [weak self] _ in self?.refreshIcon() }.store(in: &cancellables)
-        engine.$state.sink { [weak self] _ in self?.refreshIcon() }.store(in: &cancellables)
+        // @Published emits on willSet, so redraw on the next main-queue turn, after the value has changed.
+        engine.$findings.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.refreshIcon() }.store(in: &cancellables)
+        engine.$state.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.refreshIcon() }.store(in: &cancellables)
 
         hotKey.onPress = { [weak self] in self?.chatWindow.toggle() }
         registerHotKey(settings.hotKey)
@@ -134,6 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        refreshIcon()
         rebuildMenu()
     }
 

@@ -31,6 +31,8 @@ final class FactCheckEngine: ObservableObject {
     private var timer: Timer?
     private var lastSignatures: [CGDirectDisplayID: [Float]] = [:]
     private var backoffUntil = Date.distantPast
+    /// Set after a failure so the next cycle calls the API even if the screen has not changed.
+    private var retryPending = false
     private var cancellables = Set<AnyCancellable>()
 
     init() {
@@ -111,7 +113,7 @@ final class FactCheckEngine: ObservableObject {
             let captures = try await capturer.captureAll()
             guard !captures.isEmpty else { lastNote = "No displays found"; return }
 
-            var changed = force
+            var changed = force || retryPending
             var maxDelta = 0.0
             for c in captures {
                 let delta = ScreenCapturer.changedFraction(lastSignatures[c.displayID] ?? [], c.signature)
@@ -136,6 +138,7 @@ final class FactCheckEngine: ObservableObject {
             )
             usage.record(u)
             lastCheck = now
+            retryPending = false
             if case .error = state { state = .watching }
 
             var fresh: [Finding] = []
@@ -164,6 +167,7 @@ final class FactCheckEngine: ObservableObject {
             log.error("cycle failed: \(msg, privacy: .public)")
             lastNote = msg
             state = .error(msg)
+            retryPending = true
             // Missing key / permission: wait a while. Rate limit: back off. Everything else: brief pause.
             switch error {
             case APIError.noKey, CaptureError.noPermission: backoffUntil = Date().addingTimeInterval(60)

@@ -39,9 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .sink { [weak self] combo in self?.registerHotKey(combo) }
             .store(in: &cancellables)
 
-        if !ScreenCapturer.hasPermission {
-            ScreenCapturer.requestPermission()
-        }
+        // Do not call CGRequestScreenCaptureAccess here: ScreenCaptureKit shows the system prompt
+        // itself the first time a capture is attempted without permission, and calling it on every
+        // launch produced repeated dialogs. The Settings button still offers an explicit request.
         if APIKeyStore.read() == nil {
             settingsWindow.show()
         }

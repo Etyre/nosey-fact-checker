@@ -23,13 +23,25 @@ IDENTITY="${CODESIGN_IDENTITY:-}"
 if [ -z "$IDENTITY" ]; then
   IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | grep -o '"Apple Development[^"]*"' | head -1 | tr -d '"' || true)"
 fi
+# Copied files can carry extended attributes (Finder info, provenance) that make codesign refuse
+# with "resource fork, Finder information, or similar detritus not allowed". Strip them first.
+xattr -cr "$BUNDLE"
 if [ -n "$IDENTITY" ]; then
   echo "▸ codesign with: $IDENTITY"
   codesign --force --sign "$IDENTITY" --timestamp=none "$BUNDLE"
+  # A signature without the team ID means macOS will treat every rebuild as a new app and
+  # re-ask for Screen Recording. Fail loudly rather than ship that.
+  SIG_INFO="$(codesign -dv "$BUNDLE" 2>&1 || true)"
+  if ! echo "$SIG_INFO" | grep "^TeamIdentifier=[A-Z0-9]" >/dev/null; then
+    echo "✗ signature is missing the team identifier; refusing to continue" >&2
+    codesign -dv "$BUNDLE" 2>&1 | grep -E "Identifier|Authority" >&2
+    exit 1
+  fi
 else
-  echo "▸ codesign ad-hoc (no Apple Development identity found)"
+  echo "▸ codesign ad-hoc (no Apple Development identity found; Screen Recording will re-prompt after each rebuild)"
   codesign --force --sign - "$BUNDLE"
 fi
+codesign -dv "$BUNDLE" 2>&1 | grep -E "^(Identifier|TeamIdentifier)=" | sed 's/^/▸ /'
 echo "▸ built $BUNDLE"
 
 TARGET="$BUNDLE"

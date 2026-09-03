@@ -1,0 +1,11 @@
+# Swift Package Manager build products
+.build/
+# Assembled app bundle
+build/
+# macOS
+.DS_Store
+# Xcode user state, if the package is ever opened in Xcode
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+.swiftpm/

@@ -151,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case .paused(let until):
             if let until { status = "Paused until \(until.formatted(date: .omitted, time: .shortened))" } else { status = "Paused" }
         case .error(let msg):
-            status = "Problem: \(msg)"
+            status = "Problem (will retry): \(msg)"
         }
         let statusItemMenu = NSMenuItem(title: status, action: nil, keyEquivalent: "")
         statusItemMenu.isEnabled = false

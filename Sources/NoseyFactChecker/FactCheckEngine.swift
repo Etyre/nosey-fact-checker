@@ -42,7 +42,9 @@ final class FactCheckEngine: ObservableObject {
             .store(in: &cancellables)
     }
 
-    var isWatching: Bool { if case .watching = state { return true } else { return false } }
+    /// Paused is the only state that stops the loop; an error is shown but checks keep retrying.
+    var isPaused: Bool { if case .paused = state { return true } else { return false } }
+    var isWatching: Bool { !isPaused }
     var unreadCount: Int { findings.filter { !$0.read }.count }
 
     // MARK: Control
@@ -159,7 +161,7 @@ final class FactCheckEngine: ObservableObject {
             // ignore
         } catch {
             let msg = error.localizedDescription
-            log.error("cycle failed: \(msg)")
+            log.error("cycle failed: \(msg, privacy: .public)")
             lastNote = msg
             state = .error(msg)
             // Missing key / permission: wait a while. Rate limit: back off. Everything else: brief pause.

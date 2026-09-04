@@ -1,9 +1,55 @@
 import Foundation
+import AppKit
 import Combine
 import os
 import CoreGraphics
 
 private let log = Logger(subsystem: "com.elityre.nosey", category: "engine")
+
+enum EngineError: LocalizedError {
+    case timeout(String)
+    var errorDescription: String? {
+        switch self { case .timeout(let what): return "\(what) timed out" }
+    }
+}
+
+/// Plain-text log at ~/Library/Application Support/Nosey/nosey.log (os_log entries proved hard to
+/// retrieve). Rotated when it passes 2 MB.
+enum FileLog {
+    static let url = Paths.appSupport.appendingPathComponent("nosey.log")
+    private static let queue = DispatchQueue(label: "nosey.filelog")
+    private static let stamp: DateFormatter = { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"; return f }()
+
+    static func write(_ message: String) {
+        let line = "\(stamp.string(from: Date())) \(message)\n"
+        queue.async {
+            let fm = FileManager.default
+            try? fm.createDirectory(at: Paths.appSupport, withIntermediateDirectories: true)
+            if let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int, size > 2_000_000 {
+                try? fm.moveItem(at: url, to: url.deletingPathExtension().appendingPathExtension("old.log"))
+            }
+            if let h = try? FileHandle(forWritingTo: url) {
+                h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
+            } else {
+                try? line.write(to: url, atomically: true, encoding: .utf8)
+            }
+        }
+    }
+}
+
+/// Runs `op` but gives up after `seconds`. ScreenCaptureKit calls have been observed to hang across sleep.
+func withTimeout<T>(_ seconds: Double, _ what: String, _ op: @escaping () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await op() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw EngineError.timeout(what)
+        }
+        let result = try await group.next()!
+        group.cancelAll()
+        return result
+    }
+}
 
 /// The capture → change-detect → fact-check → notify loop.
 @MainActor
@@ -19,6 +65,7 @@ final class FactCheckEngine: ObservableObject {
     @Published private(set) var lastNote: String = "Not started"
     @Published private(set) var findings: [Finding] = []      // newest first
     @Published private(set) var inFlight = false
+    private var inFlightSince = Date.distantPast
 
     var onNewFindings: (([Finding]) -> Void)?
 
@@ -37,6 +84,13 @@ final class FactCheckEngine: ObservableObject {
 
     init() {
         findings = store.loadFindings().sorted { $0.date > $1.date }
+        FileLog.write("engine init; \(findings.count) stored findings")
+        let wc = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
+            wc.addObserver(forName: name, object: nil, queue: .main) { [weak self] n in
+                Task { @MainActor in self?.handleWake(n.name.rawValue) }
+            }
+        }
         settings.$intervalSeconds
             .dropFirst()
             .debounce(for: .seconds(0.5), scheduler: RunLoop.main)
@@ -45,6 +99,19 @@ final class FactCheckEngine: ObservableObject {
     }
 
     /// Paused is the only state that stops the loop; an error is shown but checks keep retrying.
+    private func handleWake(_ reason: String) {
+        FileLog.write("wake (\(reason)); resetting in-flight state and re-checking")
+        inFlight = false
+        lastSignatures = [:]
+        backoffUntil = .distantPast
+        if isWatching {
+            Task {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                await cycle(force: true)
+            }
+        }
+    }
+
     var isPaused: Bool { if case .paused = state { return true } else { return false } }
     var isWatching: Bool { !isPaused }
     var unreadCount: Int { findings.filter { !$0.read }.count }
@@ -52,6 +119,7 @@ final class FactCheckEngine: ObservableObject {
     // MARK: Control
 
     func start() {
+        FileLog.write("start watching (interval \(Int(settings.intervalSeconds))s)")
         state = .watching
         lastNote = "Watching"
         reschedule()
@@ -60,6 +128,7 @@ final class FactCheckEngine: ObservableObject {
 
     func pause(for interval: TimeInterval? = nil) {
         let until = interval.map { Date().addingTimeInterval($0) }
+        FileLog.write("paused" + (until.map { " until \($0)" } ?? ""))
         state = .paused(until: until)
         lastNote = "Paused"
         timer?.invalidate(); timer = nil
@@ -101,16 +170,26 @@ final class FactCheckEngine: ObservableObject {
     // MARK: The loop
 
     private func cycle(force: Bool) async {
-        guard !inFlight else { return }
+        if inFlight {
+            // Watchdog: a cycle that has been "in flight" for minutes is hung (seen across sleep). Abandon it.
+            if Date().timeIntervalSince(inFlightSince) > 180 {
+                FileLog.write("watchdog: abandoning cycle stuck since \(inFlightSince)")
+                inFlight = false
+            } else {
+                return
+            }
+        }
         if !force {
             guard isWatching, Date() >= backoffUntil else { return }
         }
         inFlight = true
+        inFlightSince = Date()
         defer { inFlight = false }
 
         do {
             capturer.maxEdge = Int(settings.maxImageEdge)
-            let captures = try await capturer.captureAll()
+            let capturer = self.capturer
+            let captures = try await withTimeout(30, "Screen capture") { try await capturer.captureAll() }
             guard !captures.isEmpty else { lastNote = "No displays found"; return }
 
             var changed = force || retryPending
@@ -129,13 +208,11 @@ final class FactCheckEngine: ObservableObject {
             let now = Date()
             let files = store.save(captures, at: now)
             let recent = findings.filter { now.timeIntervalSince($0.date) < 24 * 3600 }.prefix(30)
-            let (raw, u) = try await client.factCheck(
-                model: settings.model,
-                effort: settings.effort,
-                system: settings.factCheckPrompt,
-                images: captures.map(\.jpegData),
-                userText: FactCheckEngine.userText(displayCount: captures.count, date: now, recent: Array(recent))
-            )
+            let client = self.client, model = settings.model, effort = settings.effort, prompt = settings.factCheckPrompt
+            let images = captures.map(\.jpegData)
+            let userText = FactCheckEngine.userText(displayCount: captures.count, date: now, recent: Array(recent))
+            let (raw, u) = try await withTimeout(120, "Fact-check request") { try await client.factCheck(
+                model: model, effort: effort, system: prompt, images: images, userText: userText) }
             usage.record(u)
             lastCheck = now
             retryPending = false
@@ -153,6 +230,7 @@ final class FactCheckEngine: ObservableObject {
                 if !dup { fresh.append(f) }
             }
             lastNote = raw.isEmpty ? "Checked: nothing flagged" : "Checked: \(raw.count) candidate(s), \(fresh.count) new"
+            FileLog.write("check ok: \(captures.count) display(s), \(u.inputTokens) in / \(u.outputTokens) out, \(raw.count) candidate(s), \(fresh.count) new" + (raw.isEmpty ? "" : " :: " + raw.map { "[\(String(format: "%.2f", $0.confidence))] \($0.summary)" }.joined(separator: " | ")))
             if !fresh.isEmpty {
                 findings.insert(contentsOf: fresh, at: 0)
                 store.saveFindings(findings)
@@ -165,6 +243,7 @@ final class FactCheckEngine: ObservableObject {
         } catch {
             let msg = error.localizedDescription
             log.error("cycle failed: \(msg, privacy: .public)")
+            FileLog.write("check FAILED: \(msg)")
             lastNote = msg
             state = .error(msg)
             retryPending = true

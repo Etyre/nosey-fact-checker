@@ -210,6 +210,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let folder = NSMenuItem(title: "Show Captures Folder", action: #selector(showFolder(_:)), keyEquivalent: "")
         folder.target = self
         menu.addItem(folder)
+        let logItem = NSMenuItem(title: "Open Log File", action: #selector(openLog(_:)), keyEquivalent: "")
+        logItem.target = self
+        menu.addItem(logItem)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Nosey", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
@@ -224,6 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func resume(_ sender: Any?) { engine.start() }
     @objc private func openSettings(_ sender: Any?) { settingsWindow.show() }
     @objc private func showFolder(_ sender: Any?) { NSWorkspace.shared.open(Paths.captures) }
+    @objc private func openLog(_ sender: Any?) { NSWorkspace.shared.open(FileLog.url) }
     @objc private func markAllRead(_ sender: Any?) { engine.markAllRead() }
     @objc private func openFinding(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID, let f = engine.finding(id: id) else { return }

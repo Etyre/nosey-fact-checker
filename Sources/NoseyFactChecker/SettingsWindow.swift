@@ -42,6 +42,7 @@ struct GeneralSettings: View {
     @State private var apiKey = APIKeyStore.read() ?? ""
     @State private var keyStatus = ""
     @State private var hotKeyDraft = AppSettings.shared.hotKey
+    @State private var dismissDraft = AppSettings.shared.dismissHotKey
     @State private var loginError = ""
 
     var body: some View {
@@ -89,13 +90,20 @@ struct GeneralSettings: View {
                 }
                 Toggle("Start watching when Nosey launches", isOn: $settings.startWatchingOnLaunch)
                 Toggle("Play a sound with notifications", isOn: $settings.notifySound)
+                Text("To keep notifications on screen until you dismiss them, set Nosey's alert style to “Alerts” in System Settings › Notifications › Nosey. Banners disappear on their own after a few seconds.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Chat window") {
                 HStack {
-                    TextField("Hotkey, e.g. ctrl+alt+cmd+f", text: $hotKeyDraft)
+                    TextField("Chat hotkey, e.g. ctrl+alt+cmd+f", text: $hotKeyDraft)
                         .onSubmit { settings.hotKey = hotKeyDraft }
                     Button("Apply") { settings.hotKey = hotKeyDraft }
+                }
+                HStack {
+                    TextField("Dismiss-notifications hotkey, e.g. ctrl+alt+cmd+d", text: $dismissDraft)
+                        .onSubmit { settings.dismissHotKey = dismissDraft }
+                    Button("Apply") { settings.dismissHotKey = dismissDraft }
                 }
                 if !settings.hotKeyStatus.isEmpty {
                     Text(settings.hotKeyStatus).font(.caption).foregroundStyle(.secondary)

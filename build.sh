@@ -59,8 +59,10 @@ done
 for arg in "$@"; do
   case "$arg" in
     --run)
+      # Wait for the old instance to exit; otherwise `open` just activates it and the new build never runs.
       pkill -x "$APP_NAME" 2>/dev/null || true
-      sleep 0.5
+      for _ in $(seq 1 40); do pgrep -x "$APP_NAME" >/dev/null || break; sleep 0.25; done
+      pgrep -x "$APP_NAME" >/dev/null && pkill -9 -x "$APP_NAME" && sleep 0.5
       open "$TARGET"
       echo "▸ launched $TARGET"
       ;;

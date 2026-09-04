@@ -34,6 +34,11 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    /// Clears every Nosey notification from the screen and Notification Center.
+    func dismissAll() {
+        UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+    }
+
     func postInfo(title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title

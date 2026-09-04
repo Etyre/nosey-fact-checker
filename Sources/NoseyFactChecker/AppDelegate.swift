@@ -33,10 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine.$findings.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.refreshIcon() }.store(in: &cancellables)
         engine.$state.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.refreshIcon() }.store(in: &cancellables)
 
-        hotKey.onPress = { [weak self] in self?.chatWindow.toggle() }
-        registerHotKey(settings.hotKey)
-        settings.$hotKey.dropFirst().removeDuplicates()
-            .sink { [weak self] combo in self?.registerHotKey(combo) }
+        registerHotKeys()
+        settings.$hotKey.dropFirst().removeDuplicates().merge(with: settings.$dismissHotKey.dropFirst().removeDuplicates())
+            .sink { [weak self] _ in self?.registerHotKeys() }
             .store(in: &cancellables)
 
         // Do not call CGRequestScreenCaptureAccess here: ScreenCaptureKit shows the system prompt
@@ -50,12 +49,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func registerHotKey(_ combo: String) {
-        if let err = hotKey.register(combo) {
-            settings.hotKeyStatus = err
+    /// Chat hotkey toggles the chat window; dismiss hotkey clears Nosey's notifications from the screen.
+    private func registerHotKeys() {
+        var status: [String] = []
+        if let err = hotKey.register(settings.hotKey, id: 1, action: { [weak self] in self?.chatWindow.toggle() }) {
+            status.append("Chat hotkey: \(err)")
         } else {
-            settings.hotKeyStatus = "Registered: \(HotKeyManager.describe(combo)) toggles the chat window."
+            status.append("\(HotKeyManager.describe(settings.hotKey)) opens/closes the chat")
         }
+        if let err = hotKey.register(settings.dismissHotKey, id: 2, action: { Notifier.shared.dismissAll() }) {
+            status.append("Dismiss hotkey: \(err)")
+        } else {
+            status.append("\(HotKeyManager.describe(settings.dismissHotKey)) dismisses notifications")
+        }
+        settings.hotKeyStatus = status.joined(separator: " · ")
     }
 
     /// Accessory apps get no menu bar, so without this ⌘X/⌘C/⌘V/⌘A/⌘Z do nothing in text fields.
@@ -167,6 +174,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let check = NSMenuItem(title: "Check Screen Now", action: #selector(checkNow(_:)), keyEquivalent: "")
         check.target = self
         menu.addItem(check)
+        let dismiss = NSMenuItem(title: "Dismiss Notifications  (\(HotKeyManager.describe(settings.dismissHotKey)))", action: #selector(dismissNotifications(_:)), keyEquivalent: "")
+        dismiss.target = self
+        menu.addItem(dismiss)
+        let preview = NSMenuItem(title: "Send a Test Notification", action: #selector(testNotification(_:)), keyEquivalent: "")
+        preview.target = self
+        menu.addItem(preview)
 
         if engine.isWatching {
             let p = NSMenuItem(title: "Pause", action: #selector(pause(_:)), keyEquivalent: "")
@@ -229,6 +242,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func showFolder(_ sender: Any?) { NSWorkspace.shared.open(Paths.captures) }
     @objc private func openLog(_ sender: Any?) { NSWorkspace.shared.open(FileLog.url) }
     @objc private func markAllRead(_ sender: Any?) { engine.markAllRead() }
+    @objc private func dismissNotifications(_ sender: Any?) { Notifier.shared.dismissAll() }
+    @objc private func testNotification(_ sender: Any?) {
+        let sample = Finding(id: UUID(), date: Date(),
+                             claim: "The Great Wall of China is visible from the Moon with the naked eye.",
+                             summary: "Test: not visible from the Moon; it is far too narrow.",
+                             explanation: "This is a test notification. The Great Wall is only a few meters wide, far below what the eye can resolve from lunar distance.",
+                             confidence: 0.98, display: 1, captureFiles: [], read: true)
+        Notifier.shared.post(sample, hotKeyLabel: HotKeyManager.describe(settings.hotKey))
+    }
     @objc private func openFinding(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID, let f = engine.finding(id: id) else { return }
         chatWindow.show(session: chat.session(for: f))

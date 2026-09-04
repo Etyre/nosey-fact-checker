@@ -27,6 +27,7 @@ final class AppSettings: ObservableObject {
     @Published var changeThreshold: Double { didSet { d.set(changeThreshold, forKey: "changeThreshold") } }
     @Published var minConfidence: Double { didSet { d.set(minConfidence, forKey: "minConfidence") } }
     @Published var hotKey: String { didSet { d.set(hotKey, forKey: "hotKey") } }
+    @Published var dismissHotKey: String { didSet { d.set(dismissHotKey, forKey: "dismissHotKey") } }
     @Published var chatWindowSize: ChatWindowSize { didSet { d.set(chatWindowSize.rawValue, forKey: "chatWindowSize") } }
     @Published var retentionHours: Double { didSet { d.set(retentionHours, forKey: "retentionHours") } }
     @Published var factCheckPrompt: String { didSet { d.set(factCheckPrompt, forKey: "factCheckPrompt") } }
@@ -47,6 +48,7 @@ final class AppSettings: ObservableObject {
         changeThreshold = d.object(forKey: "changeThreshold") as? Double ?? 0.01
         minConfidence = d.object(forKey: "minConfidence") as? Double ?? 0.75
         hotKey = d.string(forKey: "hotKey") ?? "ctrl+alt+cmd+f"
+        dismissHotKey = d.string(forKey: "dismissHotKey") ?? "ctrl+alt+cmd+d"
         chatWindowSize = ChatWindowSize(rawValue: d.string(forKey: "chatWindowSize") ?? "") ?? .quarter
         retentionHours = d.object(forKey: "retentionHours") as? Double ?? 24
         factCheckPrompt = d.string(forKey: "factCheckPrompt") ?? AppSettings.defaultFactCheckPrompt

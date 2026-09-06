@@ -39,7 +39,7 @@ final class HotKeyManager {
     func register(_ combo: String, id: UInt32, action: @escaping () -> Void) -> String? {
         unregister(id: id)
         guard let (code, mods) = HotKeyManager.parse(combo) else {
-            return "Could not parse “\(combo)”. Use e.g. ctrl+alt+f or shift+cmd+space."
+            return "Could not parse “\(combo)”. Use e.g. ctrl+alt+j or shift+cmd+space."
         }
         guard mods != 0 else { return "Add at least one modifier (ctrl, alt, cmd, shift)." }
         let hkID = EventHotKeyID(signature: OSType(0x4E534559), id: id) // 'NSEY'

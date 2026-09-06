@@ -2,7 +2,7 @@
 
 A menu bar app for macOS that watches your screen and flags statements that are false or
 misleading, using Claude. When it spots something, a normal macOS notification appears in the
-top right with a one-line summary. Press the hotkey (default **⌃⌥⌘F**) to open a streaming chat
+top right with a one-line summary. Press the hotkey (default **⌃⌥F**, all left hand) to open a streaming chat
 window about the finding, ask questions, or push back. Press the hotkey again (or Esc) to close it.
 
 ## How it works
@@ -71,7 +71,7 @@ Everything lives in Settings:
 - **Interval, change threshold, confidence threshold, retention**: cost and noise controls.
 - **Model and effort**: any current Claude model ID works. Effort `low` is the default for
   background checks; chat uses at least `medium`.
-- **Hotkey**: text like `ctrl+alt+cmd+f`, `shift+cmd+space`, `ctrl+alt+f9`.
+- **Hotkeys**: text like `ctrl+alt+f`, `shift+cmd+space`, `ctrl+alt+f9`. The dismiss hotkey (default `ctrl+alt+d`) clears Nosey's notifications; set the alert style to Alerts in System Settings if you want them to stay until dismissed.
 
 ## Cost
 

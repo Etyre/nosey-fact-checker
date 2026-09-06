@@ -63,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             status.append("\(HotKeyManager.describe(settings.dismissHotKey)) dismisses notifications")
         }
         settings.hotKeyStatus = status.joined(separator: " · ")
+        FileLog.write("hotkeys: " + settings.hotKeyStatus)
     }
 
     /// Accessory apps get no menu bar, so without this ⌘X/⌘C/⌘V/⌘A/⌘Z do nothing in text fields.

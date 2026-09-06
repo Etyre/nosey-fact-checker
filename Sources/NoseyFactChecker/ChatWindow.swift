@@ -26,9 +26,14 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
     }
 
     var isShowing: Bool { window.isVisible }
+    private var lastToggle = Date.distantPast
 
+    /// Visible → hide, otherwise show. Debounced so the global hotkey and the in-window fallback
+    /// shortcut firing for the same keypress do not cancel each other out.
     func toggle() {
-        if window.isVisible && NSApp.isActive { hide() } else { show() }
+        guard Date().timeIntervalSince(lastToggle) > 0.3 else { return }
+        lastToggle = Date()
+        if window.isVisible { hide() } else { show() }
     }
 
     func show(session: ChatSession? = nil) {
@@ -39,9 +44,19 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         controller.focusToken += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self else { return }
+            if !self.window.isKeyWindow {
+                NSApp.activate(ignoringOtherApps: true)
+                self.window.makeKeyAndOrderFront(nil)
+                self.controller.focusToken += 1
+            }
+            FileLog.write("chat shown; active=\(NSApp.isActive) key=\(self.window.isKeyWindow)")
+        }
     }
 
     func hide() {
+        FileLog.write("chat hidden")
         window.orderOut(nil)
         NSApp.hide(nil)   // hand focus back to whatever the user was using
     }
@@ -133,6 +148,9 @@ struct ChatView: View {
                 Button("") { settings.chatWindowSize = .half }.keyboardShortcut("2", modifiers: .command)
                 Button("") { settings.chatWindowSize = .full }.keyboardShortcut("3", modifiers: .command)
                 Button("") { windowController.hide() }.keyboardShortcut("w", modifiers: .command)
+                if let sc = HotKeyManager.swiftUIShortcut(settings.hotKey) {
+                    Button("") { windowController.toggle() }.keyboardShortcut(sc)
+                }
             }
             .frame(width: 0, height: 0).opacity(0)
         }

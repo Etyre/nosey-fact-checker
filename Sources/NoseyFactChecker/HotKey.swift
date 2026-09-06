@@ -1,5 +1,6 @@
 import Carbon
 import Foundation
+import SwiftUI
 
 /// System-wide hotkeys via Carbon's RegisterEventHotKey (no Accessibility permission needed).
 /// Several hotkeys can be registered, each identified by a small integer id.
@@ -11,7 +12,9 @@ final class HotKeyManager {
     init() {
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
-        InstallEventHandler(GetApplicationEventTarget(), { _, event, userData -> OSStatus in
+        // The dispatcher target receives hotkey events whether or not this app is frontmost;
+        // the application target misses them while our own window is key.
+        InstallEventHandler(GetEventDispatcherTarget(), { _, event, userData -> OSStatus in
             guard let userData, let event else { return noErr }
             var hkID = EventHotKeyID()
             GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
@@ -39,12 +42,12 @@ final class HotKeyManager {
     func register(_ combo: String, id: UInt32, action: @escaping () -> Void) -> String? {
         unregister(id: id)
         guard let (code, mods) = HotKeyManager.parse(combo) else {
-            return "Could not parse “\(combo)”. Use e.g. alt+cmd+j or shift+cmd+space."
+            return "Could not parse “\(combo)”. Use e.g. ctrl+cmd+j or shift+cmd+space."
         }
         guard mods != 0 else { return "Add at least one modifier (ctrl, alt, cmd, shift)." }
         let hkID = EventHotKeyID(signature: OSType(0x4E534559), id: id) // 'NSEY'
         var ref: EventHotKeyRef?
-        let status = RegisterEventHotKey(code, mods, hkID, GetApplicationEventTarget(), 0, &ref)
+        let status = RegisterEventHotKey(code, mods, hkID, GetEventDispatcherTarget(), 0, &ref)
         if status != noErr || ref == nil {
             return "System refused the hotkey (error \(status)); it may already be taken."
         }
@@ -70,6 +73,27 @@ final class HotKeyManager {
         }
         guard let key else { return nil }
         return (key, mods)
+    }
+
+    /// SwiftUI equivalent of a combo, for an in-window fallback shortcut. Letters, digits and space only.
+    static func swiftUIShortcut(_ combo: String) -> KeyboardShortcut? {
+        var mods: SwiftUI.EventModifiers = []
+        var key: KeyEquivalent?
+        for raw in combo.lowercased().split(whereSeparator: { $0 == "+" || $0 == " " || $0 == "-" }) {
+            let p = String(raw)
+            switch p {
+            case "ctrl", "control", "^": mods.insert(.control)
+            case "alt", "opt", "option", "⌥": mods.insert(.option)
+            case "cmd", "command", "⌘": mods.insert(.command)
+            case "shift", "⇧": mods.insert(.shift)
+            case "space": key = .space
+            default:
+                guard p.count == 1, let c = p.first, c.isLetter || c.isNumber else { return nil }
+                key = KeyEquivalent(c)
+            }
+        }
+        guard let key, !mods.isEmpty else { return nil }
+        return KeyboardShortcut(key, modifiers: mods)
     }
 
     static func describe(_ combo: String) -> String {

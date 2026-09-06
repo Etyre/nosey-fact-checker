@@ -47,8 +47,8 @@ final class AppSettings: ObservableObject {
         intervalSeconds = d.object(forKey: "intervalSeconds") as? Double ?? 5
         changeThreshold = d.object(forKey: "changeThreshold") as? Double ?? 0.01
         minConfidence = d.object(forKey: "minConfidence") as? Double ?? 0.75
-        hotKey = d.string(forKey: "hotKey") ?? "alt+cmd+j"
-        dismissHotKey = d.string(forKey: "dismissHotKey") ?? "alt+cmd+k"
+        hotKey = d.string(forKey: "hotKey") ?? "ctrl+cmd+j"
+        dismissHotKey = d.string(forKey: "dismissHotKey") ?? "ctrl+cmd+k"
         chatWindowSize = ChatWindowSize(rawValue: d.string(forKey: "chatWindowSize") ?? "") ?? .quarter
         retentionHours = d.object(forKey: "retentionHours") as? Double ?? 24
         factCheckPrompt = d.string(forKey: "factCheckPrompt") ?? AppSettings.defaultFactCheckPrompt

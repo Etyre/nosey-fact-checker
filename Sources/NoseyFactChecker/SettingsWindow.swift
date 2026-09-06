@@ -96,12 +96,12 @@ struct GeneralSettings: View {
 
             Section("Chat window") {
                 HStack {
-                    TextField("Chat hotkey, e.g. alt+cmd+j", text: $hotKeyDraft)
+                    TextField("Chat hotkey, e.g. ctrl+cmd+j", text: $hotKeyDraft)
                         .onSubmit { settings.hotKey = hotKeyDraft }
                     Button("Apply") { settings.hotKey = hotKeyDraft }
                 }
                 HStack {
-                    TextField("Dismiss-notifications hotkey, e.g. alt+cmd+k", text: $dismissDraft)
+                    TextField("Dismiss-notifications hotkey, e.g. ctrl+cmd+k", text: $dismissDraft)
                         .onSubmit { settings.dismissHotKey = dismissDraft }
                     Button("Apply") { settings.dismissHotKey = dismissDraft }
                 }

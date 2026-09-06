@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Combine
 import ServiceManagement
 
@@ -33,7 +34,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         engine.$findings.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.refreshIcon() }.store(in: &cancellables)
         engine.$state.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.refreshIcon() }.store(in: &cancellables)
 
+        // Diagnostic: log raw key presses that reach Nosey's own windows (no permission needed for local events).
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            let f = e.modifierFlags
+            guard f.contains(.command) || f.contains(.control) else { return e }
+            var mods: [String] = []
+            if f.contains(.control) { mods.append("ctrl") }
+            if f.contains(.option) { mods.append("alt") }
+            if f.contains(.command) { mods.append("cmd") }
+            if f.contains(.shift) { mods.append("shift") }
+            if f.contains(.function) { mods.append("fn") }
+            if f.contains(.capsLock) { mods.append("caps") }
+            FileLog.write("keyDown in Nosey window: code=\(e.keyCode) mods=\(mods.joined(separator: "+")) chars=\(e.charactersIgnoringModifiers ?? "")")
+            return e
+        }
         registerHotKeys()
+        // Hotkeys bind to physical key positions, so re-resolve them when the keyboard layout changes.
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil, queue: .main
+        ) { [weak self] _ in self?.registerHotKeys() }
         settings.$hotKey.dropFirst().removeDuplicates().merge(with: settings.$dismissHotKey.dropFirst().removeDuplicates())
             .sink { [weak self] _ in self?.registerHotKeys() }
             .store(in: &cancellables)
@@ -68,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             status.append("\(HotKeyManager.describe(settings.dismissHotKey)) dismisses notifications")
         }
+        status.append("layout: \(HotKeyManager.currentLayoutName)")
         settings.hotKeyStatus = status.joined(separator: " · ")
         FileLog.write("hotkeys: " + settings.hotKeyStatus)
     }

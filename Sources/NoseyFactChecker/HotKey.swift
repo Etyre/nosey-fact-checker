@@ -67,12 +67,49 @@ final class HotKeyManager {
             case "cmd", "command", "⌘": mods |= UInt32(cmdKey)
             case "shift", "⇧": mods |= UInt32(shiftKey)
             default:
-                guard key == nil, let code = keyCodes[part] else { return nil }
-                key = code
+                guard key == nil else { return nil }
+                // Single characters go through the active keyboard layout (Colemak, Dvorak, AZERTY…);
+                // hotkeys bind to physical positions, and the QWERTY table below is only a fallback.
+                if part.count == 1, let c = part.first, let code = layoutKeyCode(for: c) {
+                    key = code
+                } else if let code = keyCodes[part] {
+                    key = code
+                } else {
+                    return nil
+                }
             }
         }
         guard let key else { return nil }
         return (key, mods)
+    }
+
+    /// Key code that produces `char` (unmodified) on the current keyboard layout.
+    static func layoutKeyCode(for char: Character) -> UInt32? {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let layoutPtr = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return nil }
+        let data = Unmanaged<CFData>.fromOpaque(layoutPtr).takeUnretainedValue() as Data
+        let target = String(char).lowercased()
+        return data.withUnsafeBytes { buf -> UInt32? in
+            guard let base = buf.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else { return nil }
+            for code in 0..<128 {
+                var deadKeyState: UInt32 = 0
+                var length = 0
+                var chars = [UniChar](repeating: 0, count: 4)
+                let err = UCKeyTranslate(base, UInt16(code), UInt16(kUCKeyActionDown), 0, UInt32(LMGetKbdType()),
+                                         OptionBits(kUCKeyTranslateNoDeadKeysMask), &deadKeyState, chars.count, &length, &chars)
+                if err == noErr, length > 0, String(utf16CodeUnits: chars, count: length).lowercased() == target {
+                    return UInt32(code)
+                }
+            }
+            return nil
+        }
+    }
+
+    /// Name of the active keyboard layout, for the settings status line.
+    static var currentLayoutName: String {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let ptr = TISGetInputSourceProperty(source, kTISPropertyLocalizedName) else { return "unknown layout" }
+        return Unmanaged<CFString>.fromOpaque(ptr).takeUnretainedValue() as String
     }
 
     /// SwiftUI equivalent of a combo, for an in-window fallback shortcut. Letters, digits and space only.

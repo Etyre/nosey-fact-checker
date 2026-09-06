@@ -52,12 +52,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Chat hotkey toggles the chat window; dismiss hotkey clears Nosey's notifications from the screen.
     private func registerHotKeys() {
         var status: [String] = []
-        if let err = hotKey.register(settings.hotKey, id: 1, action: { [weak self] in self?.chatWindow.toggle() }) {
+        if let err = hotKey.register(settings.hotKey, id: 1, action: { [weak self] in
+            FileLog.write("hotkey: chat toggle pressed")
+            self?.chatWindow.toggle()
+        }) {
             status.append("Chat hotkey: \(err)")
         } else {
             status.append("\(HotKeyManager.describe(settings.hotKey)) opens/closes the chat")
         }
-        if let err = hotKey.register(settings.dismissHotKey, id: 2, action: { Notifier.shared.dismissAll() }) {
+        if let err = hotKey.register(settings.dismissHotKey, id: 2, action: {
+            FileLog.write("hotkey: dismiss pressed")
+            Notifier.shared.dismissAll()
+        }) {
             status.append("Dismiss hotkey: \(err)")
         } else {
             status.append("\(HotKeyManager.describe(settings.dismissHotKey)) dismisses notifications")

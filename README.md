@@ -71,7 +71,7 @@ Everything lives in Settings:
 - **Interval, change threshold, confidence threshold, retention**: cost and noise controls.
 - **Model and effort**: any current Claude model ID works. Effort `low` is the default for
   background checks; chat uses at least `medium`.
-- **Hotkeys**: text like `ctrl+cmd+j`, `shift+cmd+space`, `ctrl+alt+f9`. The dismiss hotkey (default `ctrl+cmd+k`) clears Nosey's notifications; set the alert style to Alerts in System Settings if you want them to stay until dismissed.
+- **Hotkeys**: text like `ctrl+cmd+j`, `shift+cmd+space`, `ctrl+alt+f9`. The dismiss hotkey (default `ctrl+cmd+k`) clears the top Nosey notification, one per press; the chat hotkey opens the top one; set the alert style to Alerts in System Settings if you want them to stay until dismissed.
 
 ## Cost
 

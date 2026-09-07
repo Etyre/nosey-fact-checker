@@ -101,7 +101,7 @@ struct GeneralSettings: View {
                     Button("Apply") { settings.hotKey = hotKeyDraft }
                 }
                 HStack {
-                    TextField("Dismiss-notifications hotkey, e.g. ctrl+cmd+k", text: $dismissDraft)
+                    TextField("Dismiss-top-notification hotkey, e.g. ctrl+cmd+k", text: $dismissDraft)
                         .onSubmit { settings.dismissHotKey = dismissDraft }
                     Button("Apply") { settings.dismissHotKey = dismissDraft }
                 }

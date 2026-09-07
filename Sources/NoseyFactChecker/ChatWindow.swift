@@ -28,12 +28,22 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
     var isShowing: Bool { window.isVisible }
     private var lastToggle = Date.distantPast
 
+    /// Asked which session to open when the hotkey shows the window (e.g. the top notification on screen).
+    /// Called with a completion; pass nil to fall back to the default session.
+    var sessionForHotKey: ((@escaping (ChatSession?) -> Void) -> Void)?
+
     /// Visible → hide, otherwise show. Debounced so the global hotkey and the in-window fallback
     /// shortcut firing for the same keypress do not cancel each other out.
     func toggle() {
         guard Date().timeIntervalSince(lastToggle) > 0.3 else { return }
         lastToggle = Date()
-        if window.isVisible { hide() } else { show() }
+        if window.isVisible {
+            hide()
+        } else if let sessionForHotKey {
+            sessionForHotKey { [weak self] session in self?.show(session: session) }
+        } else {
+            show()
+        }
     }
 
     func show(session: ChatSession? = nil) {

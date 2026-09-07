@@ -29,6 +29,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self, let f = self.engine.finding(id: id) else { return }
             self.chatWindow.show(session: self.chat.session(for: f))
         }
+        // The chat hotkey expands whichever Nosey notification is on top of the stack, and clears it
+        // from the screen, the way clicking it would. With none on screen it opens the newest finding.
+        chatWindow.sessionForHotKey = { [weak self] completion in
+            guard let self else { completion(nil); return }
+            Notifier.shared.deliveredFindings { ids in
+                if let id = ids.first, let f = self.engine.finding(id: id) {
+                    Notifier.shared.remove(id)
+                    FileLog.write("hotkey opened top notification (\(ids.count) on screen): \(f.summary)")
+                    completion(self.chat.session(for: f))
+                } else {
+                    FileLog.write("hotkey: no notifications on screen; opening default session")
+                    completion(nil)
+                }
+            }
+        }
         engine.onNewFindings = { [weak self] _ in self?.refreshIcon() }
         // @Published emits on willSet, so redraw on the next main-queue turn, after the value has changed.
         engine.$findings.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.refreshIcon() }.store(in: &cancellables)
@@ -81,11 +96,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let err = hotKey.register(settings.dismissHotKey, id: 2, action: {
             FileLog.write("hotkey: dismiss pressed")
-            Notifier.shared.dismissAll()
+            Notifier.shared.dismissTop()
         }) {
             status.append("Dismiss hotkey: \(err)")
         } else {
-            status.append("\(HotKeyManager.describe(settings.dismissHotKey)) dismisses notifications")
+            status.append("\(HotKeyManager.describe(settings.dismissHotKey)) dismisses the top notification")
         }
         status.append("layout: \(HotKeyManager.currentLayoutName)")
         settings.hotKeyStatus = status.joined(separator: " · ")
@@ -201,7 +216,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let check = NSMenuItem(title: "Check Screen Now", action: #selector(checkNow(_:)), keyEquivalent: "")
         check.target = self
         menu.addItem(check)
-        let dismiss = NSMenuItem(title: "Dismiss Notifications  (\(HotKeyManager.describe(settings.dismissHotKey)))", action: #selector(dismissNotifications(_:)), keyEquivalent: "")
+        let dismissTop = NSMenuItem(title: "Dismiss Top Notification  (\(HotKeyManager.describe(settings.dismissHotKey)))", action: #selector(dismissTopNotification(_:)), keyEquivalent: "")
+        dismissTop.target = self
+        menu.addItem(dismissTop)
+        let dismiss = NSMenuItem(title: "Dismiss All Notifications", action: #selector(dismissNotifications(_:)), keyEquivalent: "")
         dismiss.target = self
         menu.addItem(dismiss)
         let preview = NSMenuItem(title: "Send a Test Notification", action: #selector(testNotification(_:)), keyEquivalent: "")
@@ -270,6 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openLog(_ sender: Any?) { NSWorkspace.shared.open(FileLog.url) }
     @objc private func markAllRead(_ sender: Any?) { engine.markAllRead() }
     @objc private func dismissNotifications(_ sender: Any?) { Notifier.shared.dismissAll() }
+    @objc private func dismissTopNotification(_ sender: Any?) { Notifier.shared.dismissTop() }
     @objc private func testNotification(_ sender: Any?) {
         let sample = Finding(id: UUID(), date: Date(),
                              claim: "The Great Wall of China is visible from the Moon with the naked eye.",

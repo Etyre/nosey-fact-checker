@@ -16,6 +16,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // macOS tells apps apart by path, so build/Nosey.app and ~/Applications/Nosey.app can run at the
+        // same time, each capturing and billing every screen change. Yield to the instance already running.
+        if let other = AppDelegate.otherRunningInstance() {
+            FileLog.write("another Nosey is already running (pid \(other.processIdentifier), \(other.bundleURL?.path ?? "?")); quitting this copy at \(Bundle.main.bundlePath)")
+            FileLog.flush()
+            exit(0)
+        }
+        // Launch at Login records the bundle path that registered it. Re-register from the installed copy so a
+        // login item left pointing at a build folder (or a moved app) is repaired on the next launch.
+        if settings.launchAtLogin, AppDelegate.isInstalledInApplications {
+            do { try SMAppService.mainApp.register() } catch { FileLog.write("launch at login re-register failed: \(error.localizedDescription)") }
+        }
+
         engine = FactCheckEngine()
         chat = ChatController(client: engine.client)
         chat.engine = engine
@@ -81,6 +94,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if settings.startWatchingOnLaunch {
             engine.start()
         }
+    }
+
+    /// Another process with this bundle identifier, if one is running (a second copy of the app at another path).
+    static func otherRunningInstance() -> NSRunningApplication? {
+        guard let id = Bundle.main.bundleIdentifier else { return nil }
+        let me = ProcessInfo.processInfo.processIdentifier
+        return NSRunningApplication.runningApplications(withBundleIdentifier: id).first { $0.processIdentifier != me }
+    }
+
+    /// True when running from /Applications or ~/Applications, the only places a login item should point at.
+    static var isInstalledInApplications: Bool {
+        let path = Bundle.main.bundleURL.deletingLastPathComponent().standardizedFileURL.path
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return path == "/Applications" || path == home + "/Applications"
     }
 
     /// Chat hotkey toggles the chat window; dismiss hotkey clears Nosey's notifications from the screen.

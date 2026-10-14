@@ -168,7 +168,9 @@ struct GeneralSettings: View {
     private func updateLoginItem(_ on: Bool) {
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-            loginError = ""
+            loginError = on && !AppDelegate.isInstalledInApplications
+                ? "Launch at login now points at \(Bundle.main.bundlePath). Run ./build.sh --install --run so it points at ~/Applications instead; otherwise two copies of Nosey can end up running."
+                : ""
         } catch {
             loginError = "Launch at login failed: \(error.localizedDescription). Try installing Nosey.app into ~/Applications (./build.sh --install)."
             settings.launchAtLogin = !on

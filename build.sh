@@ -44,18 +44,30 @@ fi
 codesign -dv "$BUNDLE" 2>&1 | grep -E "^(Identifier|TeamIdentifier)=" | sed 's/^/▸ /'
 echo "▸ built $BUNDLE"
 
-TARGET="$BUNDLE"
+INSTALLED="$HOME/Applications/$APP_NAME.app"
+INSTALL=0; RUN=0
 for arg in "$@"; do
   case "$arg" in
-    --install)
-      mkdir -p "$HOME/Applications"
-      rm -rf "$HOME/Applications/$APP_NAME.app"
-      cp -R "$BUNDLE" "$HOME/Applications/$APP_NAME.app"
-      TARGET="$HOME/Applications/$APP_NAME.app"
-      echo "▸ installed to $TARGET"
-      ;;
+    --install) INSTALL=1 ;;
+    --run) RUN=1 ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
+# Two copies at different paths (build/ and ~/Applications) can run at once, and Launch at Login
+# remembers whichever path registered it. Once a copy is installed, always run that one.
+if [ "$RUN" = 1 ] && [ "$INSTALL" = 0 ] && [ -d "$INSTALLED" ]; then
+  echo "▸ $INSTALLED exists; updating it instead of launching from $BUNDLE"
+  INSTALL=1
+fi
+
+TARGET="$BUNDLE"
+if [ "$INSTALL" = 1 ]; then
+  mkdir -p "$HOME/Applications"
+  rm -rf "$INSTALLED"
+  cp -R "$BUNDLE" "$INSTALLED"
+  TARGET="$INSTALLED"
+  echo "▸ installed to $TARGET"
+fi
 for arg in "$@"; do
   case "$arg" in
     --run)

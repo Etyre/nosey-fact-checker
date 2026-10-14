@@ -33,6 +33,11 @@ Requires Xcode 26 (or its command line tools) on macOS 14 or later.
 ./build.sh --install --run    # also copy to ~/Applications (needed for Launch at Login)
 ```
 
+Once a copy is installed in `~/Applications`, `--run` updates and launches that copy rather than the
+one in `build/`. macOS distinguishes apps by path, so two copies could otherwise run side by side,
+each sending every screen change to Claude. The app also quits at startup if another Nosey is
+already running, and re-registers Launch at Login from the installed copy.
+
 The script signs with your Apple Development certificate if one is in the keychain, so the
 Screen Recording grant survives rebuilds. Without one it falls back to ad-hoc signing, and
 macOS will ask for Screen Recording again after each rebuild.

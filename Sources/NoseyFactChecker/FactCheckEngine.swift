@@ -20,6 +20,9 @@ enum FileLog {
     private static let queue = DispatchQueue(label: "nosey.filelog")
     private static let stamp: DateFormatter = { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"; return f }()
 
+    /// Blocks until every queued line is on disk. Call before exiting the process.
+    static func flush() { queue.sync {} }
+
     static func write(_ message: String) {
         let line = "\(stamp.string(from: Date())) \(message)\n"
         queue.async {

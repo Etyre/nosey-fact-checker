@@ -23,8 +23,15 @@ final class AppSettings: ObservableObject {
     @Published var workspaceID: String { didSet { d.set(workspaceID, forKey: "workspaceID") } }
     @Published var effort: String { didSet { d.set(effort, forKey: "effort") } }
     @Published var intervalSeconds: Double { didSet { d.set(intervalSeconds, forKey: "intervalSeconds") } }
-    /// Fraction (0–1) of the 32×32 thumbnail cells that must change before a new check is sent.
+    /// Fraction (0–1) of the 64×64 thumbnail cells that must change strongly (vs. the last screenshot
+    /// actually sent) for a check to be sent immediately: window switches, scrolling, big edits.
     @Published var changeThreshold: Double { didSet { d.set(changeThreshold, forKey: "changeThreshold") } }
+    /// Fraction of cells that must change slightly (vs. the last sent screenshot) to count as a minor edit,
+    /// e.g. a typed sentence. A minor edit is sent once the screen has been still for `settleTicks` ticks.
+    /// Around 0.003 ignores the blinking caret and the menu bar clock but catches one line of text.
+    @Published var fineChangeThreshold: Double { didSet { d.set(fineChangeThreshold, forKey: "fineChangeThreshold") } }
+    /// Consecutive unchanged ticks required before a pending minor edit is sent.
+    @Published var settleTicks: Int { didSet { d.set(settleTicks, forKey: "settleTicks") } }
     @Published var minConfidence: Double { didSet { d.set(minConfidence, forKey: "minConfidence") } }
     @Published var hotKey: String { didSet { d.set(hotKey, forKey: "hotKey") } }
     @Published var dismissHotKey: String { didSet { d.set(dismissHotKey, forKey: "dismissHotKey") } }
@@ -46,6 +53,8 @@ final class AppSettings: ObservableObject {
         effort = d.string(forKey: "effort") ?? "low"
         intervalSeconds = d.object(forKey: "intervalSeconds") as? Double ?? 5
         changeThreshold = d.object(forKey: "changeThreshold") as? Double ?? 0.01
+        fineChangeThreshold = d.object(forKey: "fineChangeThreshold") as? Double ?? 0.003
+        settleTicks = d.object(forKey: "settleTicks") as? Int ?? 2
         minConfidence = d.object(forKey: "minConfidence") as? Double ?? 0.75
         hotKey = d.string(forKey: "hotKey") ?? "ctrl+cmd+j"
         dismissHotKey = d.string(forKey: "dismissHotKey") ?? "ctrl+cmd+k"

@@ -6,7 +6,7 @@ struct DisplayCapture {
     let displayID: CGDirectDisplayID
     let image: CGImage
     let jpegData: Data
-    let signature: [Float]         // 32×32 grayscale thumbnail for change detection
+    let signature: [Float]         // 64×64 grayscale thumbnail for change detection
 }
 
 enum CaptureError: LocalizedError {
@@ -63,7 +63,7 @@ final class ScreenCapturer {
     }
 
     /// Tiny grayscale thumbnail used to detect whether the screen changed meaningfully.
-    static func signature(of image: CGImage, size: Int = 32) -> [Float] {
+    static func signature(of image: CGImage, size: Int = 64) -> [Float] {
         var bytes = [UInt8](repeating: 0, count: size * size)
         let ok: Bool = bytes.withUnsafeMutableBytes { buf in
             guard let ctx = CGContext(data: buf.baseAddress, width: size, height: size,
@@ -79,10 +79,12 @@ final class ScreenCapturer {
     }
 
     /// Fraction of thumbnail cells whose brightness changed noticeably.
-    static func changedFraction(_ a: [Float], _ b: [Float]) -> Double {
+    /// Fraction of thumbnail cells whose brightness moved by more than `cellThreshold` (0–1).
+    /// 0.08 catches layout changes (window switches, scrolling); ~0.03 also catches a single typed line.
+    static func changedFraction(_ a: [Float], _ b: [Float], cellThreshold: Float = 0.08) -> Double {
         guard a.count == b.count, !a.isEmpty else { return 1 }
         var n = 0
-        for i in 0..<a.count where abs(a[i] - b[i]) > 0.08 { n += 1 }
+        for i in 0..<a.count where abs(a[i] - b[i]) > cellThreshold { n += 1 }
         return Double(n) / Double(a.count)
     }
 }

@@ -76,7 +76,11 @@ final class FactCheckEngine: ObservableObject {
     private let usage = UsageTracker.shared
 
     private var timer: Timer?
-    private var lastSignatures: [CGDirectDisplayID: [Float]] = [:]
+    /// Signatures of the screenshots last sent for checking; small edits accumulate against these.
+    private var lastSentSignatures: [CGDirectDisplayID: [Float]] = [:]
+    /// Signatures from the previous tick, used to tell whether the screen has settled.
+    private var lastTickSignatures: [CGDirectDisplayID: [Float]] = [:]
+    private var stableTicks = 0
     private var backoffUntil = Date.distantPast
     /// Set after a failure so the next cycle calls the API even if the screen has not changed.
     private var retryPending = false
@@ -102,7 +106,9 @@ final class FactCheckEngine: ObservableObject {
     private func handleWake(_ reason: String) {
         FileLog.write("wake (\(reason)); resetting in-flight state and re-checking")
         inFlight = false
-        lastSignatures = [:]
+        lastSentSignatures = [:]
+        lastTickSignatures = [:]
+        stableTicks = 0
         backoffUntil = .distantPast
         if isWatching {
             Task {
@@ -192,18 +198,32 @@ final class FactCheckEngine: ObservableObject {
             let captures = try await withTimeout(30, "Screen capture") { try await capturer.captureAll() }
             guard !captures.isEmpty else { lastNote = "No displays found"; return }
 
-            var changed = force || retryPending
-            var maxDelta = 0.0
+            // Big changes (vs. the last screenshot actually sent) go out at once. Minor edits such as a typed
+            // sentence are held until the screen has been still for `settleTicks` ticks, so a claim is checked
+            // once when the user pauses, not on every keystroke and not while half-written.
+            let fineCell: Float = 0.03
+            var bigDelta = 0.0, fineDelta = 0.0, tickDelta = 0.0
             for c in captures {
-                let delta = ScreenCapturer.changedFraction(lastSignatures[c.displayID] ?? [], c.signature)
-                maxDelta = max(maxDelta, delta)
-                if delta >= settings.changeThreshold { changed = true }
-                lastSignatures[c.displayID] = c.signature
+                let sent = lastSentSignatures[c.displayID] ?? []
+                bigDelta = max(bigDelta, ScreenCapturer.changedFraction(sent, c.signature))
+                fineDelta = max(fineDelta, ScreenCapturer.changedFraction(sent, c.signature, cellThreshold: fineCell))
+                tickDelta = max(tickDelta, ScreenCapturer.changedFraction(lastTickSignatures[c.displayID] ?? [], c.signature, cellThreshold: fineCell))
+                lastTickSignatures[c.displayID] = c.signature
             }
-            guard changed else {
-                lastNote = String(format: "Screen unchanged (%.1f%% delta)", maxDelta * 100)
+            stableTicks = tickDelta < settings.fineChangeThreshold ? stableTicks + 1 : 0
+            let minorPending = fineDelta >= settings.fineChangeThreshold
+            let reason: String
+            if force { reason = "forced" }
+            else if retryPending { reason = "retry" }
+            else if bigDelta >= settings.changeThreshold { reason = String(format: "%.1f%% changed", bigDelta * 100) }
+            else if minorPending && stableTicks >= settings.settleTicks { reason = String(format: "minor edit settled (%.2f%%)", fineDelta * 100) }
+            else {
+                lastNote = minorPending
+                    ? String(format: "Minor edit pending (%.2f%%), waiting for the screen to settle", fineDelta * 100)
+                    : String(format: "Screen unchanged (%.1f%% delta)", bigDelta * 100)
                 return
             }
+            for c in captures { lastSentSignatures[c.displayID] = c.signature }
 
             let now = Date()
             let files = store.save(captures, at: now)
@@ -220,6 +240,8 @@ final class FactCheckEngine: ObservableObject {
 
             var fresh: [Finding] = []
             for r in raw {
+                // The model occasionally returns a blank placeholder finding instead of an empty list.
+                guard !r.claim.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 guard r.confidence >= settings.minConfidence else { continue }
                 let f = Finding(id: UUID(), date: now,
                                 claim: r.claim.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -230,7 +252,7 @@ final class FactCheckEngine: ObservableObject {
                 if !dup { fresh.append(f) }
             }
             lastNote = raw.isEmpty ? "Checked: nothing flagged" : "Checked: \(raw.count) candidate(s), \(fresh.count) new"
-            FileLog.write("check ok: \(captures.count) display(s), \(u.inputTokens) in / \(u.outputTokens) out, \(raw.count) candidate(s), \(fresh.count) new" + (raw.isEmpty ? "" : " :: " + raw.map { "[\(String(format: "%.2f", $0.confidence))] \($0.summary)" }.joined(separator: " | ")))
+            FileLog.write("check ok (\(reason)): \(captures.count) display(s), \(u.inputTokens) in / \(u.outputTokens) out, \(raw.count) candidate(s), \(fresh.count) new" + (raw.isEmpty ? "" : " :: " + raw.map { "[\(String(format: "%.2f", $0.confidence))] \($0.summary)" }.joined(separator: " | ")))
             if !fresh.isEmpty {
                 findings.insert(contentsOf: fresh, at: 0)
                 store.saveFindings(findings)

@@ -152,12 +152,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             paused = true; desc = "Nosey: paused"
         }
-        button.image = AppDelegate.noseIcon(paused: paused, badge: unread)
+        button.image = AppDelegate.noseIcon(paused: paused)
         button.toolTip = desc
     }
 
-    /// Nose glyph, filled while watching, outlined with a slash while paused, with a dot badge for unread flags.
-    private static func noseIcon(paused: Bool, badge: Bool) -> NSImage {
+    /// Nose glyph, filled while watching, outlined with a slash while paused.
+    private static func noseIcon(paused: Bool) -> NSImage {
         let size = NSSize(width: 20, height: 18)
         let symbol = NSImage(systemSymbolName: paused ? "nose" : "nose.fill", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
@@ -173,9 +173,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 line.move(to: NSPoint(x: 3, y: 2))
                 line.line(to: NSPoint(x: 15, y: 16))
                 line.stroke()
-            }
-            if badge {
-                NSBezierPath(ovalIn: NSRect(x: rect.maxX - 6.5, y: rect.maxY - 6.5, width: 6, height: 6)).fill()
             }
             return true
         }

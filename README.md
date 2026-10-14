@@ -9,8 +9,11 @@ window about the finding, ask questions, or push back. Press the hotkey again (o
 
 1. Every N seconds (default 5) it captures every connected display with ScreenCaptureKit,
    downscaled to 1568 px on the long edge and JPEG-encoded. Its own windows are excluded.
-2. It compares a 32×32 thumbnail against the previous capture. If the screen has not changed
-   enough (default 1% of cells), nothing is sent. This is the main cost control.
+2. It compares a 64×64 thumbnail against the last capture that was actually sent. A big
+   change (default 1% of cells: a window switch, scrolling, a large edit) is sent at once. A
+   minor one such as a typed sentence (default 0.3% of cells) is held until the screen has
+   been still for two ticks, then sent once. Anything smaller, like the blinking caret or the
+   menu bar clock, is ignored. This is the main cost control.
 3. Changed captures are saved to `~/Library/Application Support/Nosey/captures/` (pruned after
    24 h by default) and sent to Claude (`claude-sonnet-5` by default) with your fact-check
    prompt. The reply is structured JSON: a list of findings, each with claim, summary,
@@ -68,7 +71,7 @@ Everything lives in Settings:
 
 - **Prompts tab**: edit the fact-check system prompt to teach it what is and isn't worth
   flagging, and the chat prompt for how it should argue. Reset buttons restore the defaults.
-- **Interval, change threshold, confidence threshold, retention**: cost and noise controls.
+- **Interval, change and minor-edit thresholds, settle delay, confidence threshold, retention**: cost and noise controls.
 - **Model and effort**: any current Claude model ID works. Effort `low` is the default for
   background checks; chat uses at least `medium`.
 - **Hotkeys**: text like `ctrl+cmd+j`, `shift+cmd+space`, `ctrl+alt+f9`. The dismiss hotkey (default `ctrl+cmd+k`) clears the top Nosey notification, one per press; the chat hotkey opens the top one; set the alert style to Alerts in System Settings if you want them to stay until dismissed.

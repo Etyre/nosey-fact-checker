@@ -78,7 +78,18 @@ struct GeneralSettings: View {
                     Slider(value: $settings.changeThreshold, in: 0.002...0.2)
                     Text(String(format: "%.1f%% change", settings.changeThreshold * 100)).frame(width: 100, alignment: .trailing)
                 }
-                Text("A screenshot is sent only when at least this much of the screen changed since the last one. Lower is more sensitive (and more expensive).")
+                Text("A screenshot is sent right away when at least this much of the screen changed since the last one sent (window switches, scrolling). Lower is more sensitive (and more expensive).")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Slider(value: $settings.fineChangeThreshold, in: 0.0005...0.02)
+                    Text(String(format: "%.2f%% minor edit", settings.fineChangeThreshold * 100)).frame(width: 130, alignment: .trailing)
+                }
+                HStack {
+                    Stepper(value: $settings.settleTicks, in: 1...12) {
+                        Text("send minor edits after \(settings.settleTicks) still check\(settings.settleTicks == 1 ? "" : "s") (≈\(Int(settings.settleTicks) * Int(settings.intervalSeconds)) s)")
+                    }
+                }
+                Text("Smaller changes, like a typed sentence, are sent once the screen has held still for that long. Raise the percentage if the blinking caret or a clock keeps triggering checks.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Slider(value: $settings.minConfidence, in: 0.3...1)

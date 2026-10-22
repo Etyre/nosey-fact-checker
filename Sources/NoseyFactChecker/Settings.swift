@@ -43,6 +43,13 @@ final class AppSettings: ObservableObject {
     @Published var notifySound: Bool { didSet { d.set(notifySound, forKey: "notifySound") } }
     @Published var launchAtLogin: Bool { didSet { d.set(launchAtLogin, forKey: "launchAtLogin") } }
     @Published var startWatchingOnLaunch: Bool { didSet { d.set(startWatchingOnLaunch, forKey: "startWatchingOnLaunch") } }
+    /// Gives the model Anthropic's server-side web search tool. Each search is billed ($10 per 1,000) and
+    /// its results add input tokens, so the two limits below cap searches per request.
+    @Published var webSearch: Bool { didSet { d.set(webSearch, forKey: "webSearch") } }
+    /// Max searches per background check (0 disables search for checks while keeping it in chat).
+    @Published var checkSearchMaxUses: Int { didSet { d.set(checkSearchMaxUses, forKey: "checkSearchMaxUses") } }
+    /// Max searches per chat reply.
+    @Published var chatSearchMaxUses: Int { didSet { d.set(chatSearchMaxUses, forKey: "chatSearchMaxUses") } }
 
     /// Not persisted: status text for the hotkey registration, shown in Settings.
     @Published var hotKeyStatus: String = ""
@@ -66,7 +73,20 @@ final class AppSettings: ObservableObject {
         notifySound = d.object(forKey: "notifySound") as? Bool ?? true
         launchAtLogin = d.object(forKey: "launchAtLogin") as? Bool ?? false
         startWatchingOnLaunch = d.object(forKey: "startWatchingOnLaunch") as? Bool ?? true
+        webSearch = d.object(forKey: "webSearch") as? Bool ?? true
+        checkSearchMaxUses = d.object(forKey: "checkSearchMaxUses") as? Int ?? 2
+        chatSearchMaxUses = d.object(forKey: "chatSearchMaxUses") as? Int ?? 5
     }
+
+    /// Searches allowed for a background check, after the toggle.
+    var checkSearches: Int { webSearch ? checkSearchMaxUses : 0 }
+    /// Searches allowed for a chat reply, after the toggle.
+    var chatSearches: Int { webSearch ? chatSearchMaxUses : 0 }
+
+    /// Appended to the system prompt (after the cached part) whenever the web search tool is on.
+    static let webSearchAddendum = """
+    You have a web_search tool. Use it to verify a claim you are not sure about, and to check claims about things that may have changed after your knowledge cutoff (recent events, current office-holders, prices, versions, results): with search available, you may flag those too, but only once a search has confirmed they are wrong. Searches cost money and time, so search only when it changes what you would say, and keep queries specific. If a search does not settle the question, say so rather than guessing.
+    """
 
     static let defaultFactCheckPrompt = """
     You are Nosey, a quiet background fact-checker. Every few seconds you receive screenshots of the user's screen(s). Your job is to notice statements on screen that are factually FALSE or MATERIALLY MISLEADING according to your knowledge, and report only those.

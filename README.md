@@ -17,12 +17,15 @@ window about the finding, ask questions, or push back. Press the hotkey again (o
 3. Changed captures are saved to `~/Library/Application Support/Nosey/captures/` (pruned after
    24 h by default) and sent to Claude (`claude-sonnet-5` by default) with your fact-check
    prompt. The reply is structured JSON: a list of findings, each with claim, summary,
-   explanation, confidence, and display number.
+   explanation, confidence, and display number. The model has Anthropic's server-side web
+   search tool (on by default, capped at 2 searches per check) so it can verify a claim before
+   flagging it, including claims about things after its training cutoff.
 4. Findings below your confidence threshold, or similar to something already flagged in the
    last 24 h, are dropped. The rest become notifications (at most 3 per check).
 5. The chat window seeds the conversation with the screenshot(s) and the finding, so the model
-   can discuss exactly what it saw. Replies stream token by token. The input field is focused
-   automatically.
+   can discuss exactly what it saw. Replies stream token by token; when the model searches the
+   web, the queries show while it runs and the cited pages are listed under the reply as links.
+   The input field is focused automatically.
 
 ## Build and run
 
@@ -77,6 +80,9 @@ Everything lives in Settings:
 - **Prompts tab**: edit the fact-check system prompt to teach it what is and isn't worth
   flagging, and the chat prompt for how it should argue. Reset buttons restore the defaults.
 - **Interval, change and minor-edit thresholds, settle delay, confidence threshold, retention**: cost and noise controls.
+- **Web search**: on/off, plus caps per background check and per chat reply. Searches cost
+  $10 per 1,000 on top of tokens, and each one's results add roughly 10–20K input tokens.
+  Set the per-check cap to 0 to keep search for chat only.
 - **Model and effort**: any current Claude model ID works. Effort `low` is the default for
   background checks; chat uses at least `medium`.
 - **Hotkeys**: text like `ctrl+cmd+j`, `shift+cmd+space`, `ctrl+alt+f9`. The dismiss hotkey (default `ctrl+cmd+k`) clears the top Nosey notification, one per press; the chat hotkey opens the top one; set the alert style to Alerts in System Settings if you want them to stay until dismissed.

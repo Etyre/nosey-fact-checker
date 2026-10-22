@@ -55,6 +55,8 @@ struct APIUsage {
     var outputTokens = 0
     var cacheReadTokens = 0
     var cacheCreationTokens = 0
+    /// Web searches the API ran for us; billed per search on top of tokens.
+    var webSearches = 0
 
     init() {}
     init(json: [String: Any]?) {
@@ -63,6 +65,11 @@ struct APIUsage {
         outputTokens = json["output_tokens"] as? Int ?? 0
         cacheReadTokens = json["cache_read_input_tokens"] as? Int ?? 0
         cacheCreationTokens = json["cache_creation_input_tokens"] as? Int ?? 0
+        webSearches = APIUsage.searches(in: json)
+    }
+
+    static func searches(in json: [String: Any]) -> Int {
+        (json["server_tool_use"] as? [String: Any])?["web_search_requests"] as? Int ?? 0
     }
 
     mutating func add(_ other: APIUsage) {
@@ -70,5 +77,6 @@ struct APIUsage {
         outputTokens += other.outputTokens
         cacheReadTokens += other.cacheReadTokens
         cacheCreationTokens += other.cacheCreationTokens
+        webSearches += other.webSearches
     }
 }

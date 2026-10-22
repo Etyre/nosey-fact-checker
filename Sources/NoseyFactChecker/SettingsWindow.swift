@@ -105,6 +105,20 @@ struct GeneralSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
+            Section("Web search") {
+                Toggle("Let the model search the web", isOn: $settings.webSearch)
+                Stepper(value: $settings.checkSearchMaxUses, in: 0...10) {
+                    Text("up to \(settings.checkSearchMaxUses) search\(settings.checkSearchMaxUses == 1 ? "" : "es") per background check" + (settings.checkSearchMaxUses == 0 ? " (chat only)" : ""))
+                }
+                .disabled(!settings.webSearch)
+                Stepper(value: $settings.chatSearchMaxUses, in: 1...20) {
+                    Text("up to \(settings.chatSearchMaxUses) search\(settings.chatSearchMaxUses == 1 ? "" : "es") per chat reply")
+                }
+                .disabled(!settings.webSearch)
+                Text("Uses Anthropic's server-side web search: $10 per 1,000 searches, plus the results count as input tokens (often 10–20K per search). The model decides when to search; these are caps per request. With search on, it may also flag claims about recent events it could otherwise not verify.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
             Section("Chat window") {
                 HStack {
                     TextField("Chat hotkey, e.g. ctrl+cmd+j", text: $hotKeyDraft)

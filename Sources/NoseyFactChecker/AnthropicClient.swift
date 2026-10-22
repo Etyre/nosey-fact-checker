@@ -22,15 +22,37 @@ enum APIError: LocalizedError {
     }
 }
 
+/// A web page the model cited in a reply.
+struct Source: Equatable, Hashable {
+    let title: String
+    let url: String
+}
+
+/// What came back from a streamed chat turn, beyond the text the user saw arrive.
+struct ChatReply {
+    var text = ""
+    /// The assistant content blocks exactly as the API returned them. They must be sent back verbatim on
+    /// later turns: search results are encrypted and the API rejects a conversation where they were altered.
+    var content: [[String: Any]] = []
+    var searches: [String] = []
+    var sources: [Source] = []
+    var usage = APIUsage()
+}
+
 /// Raw-HTTP client for the Claude Messages API (there is no official Swift SDK).
 final class AnthropicClient {
     private let endpoint = URL(string: "https://api.anthropic.com/v1/messages")!
     private let session: URLSession = {
         let cfg = URLSessionConfiguration.default
-        cfg.timeoutIntervalForRequest = 90
-        cfg.timeoutIntervalForResource = 300
+        // Idle limit between bytes. A web search pauses the stream for a while, so this is generous.
+        cfg.timeoutIntervalForRequest = 180
+        cfg.timeoutIntervalForResource = 600
         return URLSession(configuration: cfg)
     }()
+
+    /// A turn that uses server tools can be paused by the API (`pause_turn`); it resumes when the same
+    /// content is sent back. This caps how many times one turn is resumed.
+    private static let maxContinuations = 4
 
     private func request(body: [String: Any]) throws -> URLRequest {
         guard let key = APIKeyStore.read() else { throw APIError.noKey }
@@ -52,17 +74,35 @@ final class AnthropicClient {
             || m.contains("opus-4-6") || m.contains("opus-4-7") || m.contains("opus-4-8") || m.contains("sonnet-4-6")
     }
 
-    private static func baseBody(model: String, effort: String, system: String, maxTokens: Int) -> [String: Any] {
+    /// Server-side web search, the basic version: the model calls it directly and cites results in its
+    /// text. The newer version routes searches through code execution, which hides the queries behind
+    /// code blocks and often returns no citations; it did not save tokens in testing either.
+    /// `maxUses` caps searches per request; each one is billed.
+    static func webSearchTool(model: String, maxUses: Int) -> [String: Any] {
+        ["type": "web_search_20250305", "name": "web_search", "max_uses": max(1, maxUses)]
+    }
+
+    private static func baseBody(model: String, effort: String, system: [[String: Any]], maxTokens: Int,
+                                 tools: [[String: Any]]) -> [String: Any] {
         var body: [String: Any] = [
             "model": model,
             "max_tokens": maxTokens,
-            "system": [["type": "text", "text": system, "cache_control": ["type": "ephemeral"]]],
+            "system": system,
         ]
+        if !tools.isEmpty { body["tools"] = tools }
         if supportsAdaptive(model) {
             body["thinking"] = ["type": "adaptive"]
             body["output_config"] = ["effort": effort]
         }
         return body
+    }
+
+    /// The user-editable prompt is cached; the short web-search addendum is appended after the breakpoint
+    /// so toggling search does not invalidate the cached prompt.
+    private static func systemBlocks(prompt: String, webSearch: Bool) -> [[String: Any]] {
+        var blocks: [[String: Any]] = [["type": "text", "text": prompt, "cache_control": ["type": "ephemeral"]]]
+        if webSearch { blocks.append(["type": "text", "text": AppSettings.webSearchAddendum]) }
+        return blocks
     }
 
     static func imageBlock(_ jpeg: Data) -> [String: Any] {
@@ -94,46 +134,103 @@ final class AnthropicClient {
 
     // MARK: Fact check (structured JSON output, non-streaming)
 
-    func factCheck(model: String, effort: String, system: String, images: [Data], userText: String) async throws -> ([RawFinding], APIUsage) {
-        var body = AnthropicClient.baseBody(model: model, effort: effort, system: system, maxTokens: 2048)
+    /// `maxSearches` > 0 gives the model the web search tool for this check.
+    func factCheck(model: String, effort: String, system: String, images: [Data], userText: String,
+                   maxSearches: Int = 0) async throws -> ([RawFinding], APIUsage) {
+        let tools = maxSearches > 0 ? [AnthropicClient.webSearchTool(model: model, maxUses: maxSearches)] : []
+        var body = AnthropicClient.baseBody(model: model, effort: effort,
+                                            system: AnthropicClient.systemBlocks(prompt: system, webSearch: maxSearches > 0),
+                                            maxTokens: 4096, tools: tools)
         var outputConfig = body["output_config"] as? [String: Any] ?? [:]
         outputConfig["format"] = ["type": "json_schema", "schema": AnthropicClient.findingsSchema]
         body["output_config"] = outputConfig
         var content: [[String: Any]] = images.map(AnthropicClient.imageBlock)
         content.append(["type": "text", "text": userText])
-        body["messages"] = [["role": "user", "content": content]]
+        let userMessage: [String: Any] = ["role": "user", "content": content]
 
-        let req = try request(body: body)
-        let (data, resp) = try await session.data(for: req)
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200 else { throw APIError.http(code, AnthropicClient.errorMessage(data)) }
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw APIError.badResponse("not a JSON object")
+        var usage = APIUsage()
+        var blocks: [[String: Any]] = []
+        for attempt in 0...AnthropicClient.maxContinuations {
+            body["messages"] = blocks.isEmpty ? [userMessage] : [userMessage, ["role": "assistant", "content": blocks]]
+            let req = try request(body: body)
+            let (data, resp) = try await session.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200 else { throw APIError.http(code, AnthropicClient.errorMessage(data)) }
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw APIError.badResponse("not a JSON object")
+            }
+            usage.add(APIUsage(json: json["usage"] as? [String: Any]))
+            let stopReason = json["stop_reason"] as? String ?? ""
+            blocks += json["content"] as? [[String: Any]] ?? []
+            if stopReason == "refusal" {
+                log.notice("fact-check refused by safety classifier; treating as no findings")
+                return ([], usage)
+            }
+            if stopReason == "pause_turn" {
+                if attempt == AnthropicClient.maxContinuations { throw APIError.badResponse("turn paused too many times") }
+                log.notice("fact-check paused after a search; resuming")
+                continue
+            }
+            break
         }
-        let usage = APIUsage(json: json["usage"] as? [String: Any])
-        let stopReason = json["stop_reason"] as? String ?? ""
-        if stopReason == "refusal" {
-            log.notice("fact-check refused by safety classifier; treating as no findings")
-            return ([], usage)
-        }
-        let blocks = json["content"] as? [[String: Any]] ?? []
-        guard let text = blocks.first(where: { ($0["type"] as? String) == "text" })?["text"] as? String else {
-            throw APIError.badResponse("no text block (stop_reason=\(stopReason))")
-        }
+        let text = AnthropicClient.finalText(blocks)
+        guard !text.isEmpty else { throw APIError.badResponse("no text block") }
         let decoded = try JSONDecoder().decode(FactCheckResponse.self, from: Data(text.utf8))
         return (decoded.findings, usage)
     }
 
+    /// The JSON answer is in the text blocks that follow the last search; citations can split it across
+    /// several blocks, so they are joined. Any text written before a search is not part of the answer.
+    private static func finalText(_ blocks: [[String: Any]]) -> String {
+        let lastTool = blocks.lastIndex { ($0["type"] as? String) != "text" && ($0["type"] as? String) != "thinking" } ?? -1
+        return blocks[(lastTool + 1)...]
+            .compactMap { ($0["type"] as? String) == "text" ? $0["text"] as? String : nil }
+            .joined()
+    }
+
     // MARK: Chat (streaming SSE)
 
-    /// Streams a reply. `onText` is called on the main actor for each text delta. Returns the full text.
-    func streamChat(model: String, effort: String, system: String, messages: [[String: Any]],
-                    onText: @escaping @MainActor (String) -> Void) async throws -> (String, APIUsage) {
-        var body = AnthropicClient.baseBody(model: model, effort: effort, system: system, maxTokens: 8192)
+    /// Streams a reply. `onText` gets each text delta; `onActivity` gets a short status line (a search in
+    /// progress) or nil when it ends. Both run on the main actor. Returns the full reply, including the raw
+    /// content blocks to store for later turns.
+    func streamChat(model: String, effort: String, system: String, messages: [[String: Any]], maxSearches: Int = 0,
+                    onText: @escaping @MainActor (String) -> Void,
+                    onActivity: @escaping @MainActor (String?) -> Void = { _ in }) async throws -> ChatReply {
+        let tools = maxSearches > 0 ? [AnthropicClient.webSearchTool(model: model, maxUses: maxSearches)] : []
+        var body = AnthropicClient.baseBody(model: model, effort: effort,
+                                            system: AnthropicClient.systemBlocks(prompt: system, webSearch: maxSearches > 0),
+                                            maxTokens: 8192, tools: tools)
         body["stream"] = true
-        body["messages"] = messages
-        let req = try request(body: body)
 
+        var reply = ChatReply()
+        for attempt in 0...AnthropicClient.maxContinuations {
+            body["messages"] = reply.content.isEmpty ? messages : messages + [["role": "assistant", "content": reply.content]]
+            let stop = try await streamOnce(body: body, reply: &reply, onText: onText, onActivity: onActivity)
+            if stop == "pause_turn" {
+                if attempt == AnthropicClient.maxContinuations { throw APIError.badResponse("turn paused too many times") }
+                log.notice("chat turn paused after a search; resuming")
+                continue
+            }
+            break
+        }
+        await onActivity(nil)
+        reply.searches = reply.content.compactMap {
+            ($0["type"] as? String) == "server_tool_use" ? ($0["input"] as? [String: Any])?["query"] as? String : nil
+        }
+        var seen = Set<String>()
+        reply.sources = reply.content.flatMap { ($0["citations"] as? [[String: Any]]) ?? [] }.compactMap { c in
+            guard let url = c["url"] as? String, seen.insert(url).inserted else { return nil }
+            return Source(title: (c["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? url, url: url)
+        }
+        return reply
+    }
+
+    /// One streamed request. Content blocks are rebuilt from the events so they can be sent back verbatim.
+    /// Returns the stop reason.
+    private func streamOnce(body: [String: Any], reply: inout ChatReply,
+                            onText: @MainActor (String) -> Void,
+                            onActivity: @MainActor (String?) -> Void) async throws -> String {
+        let req = try request(body: body)
         let (bytes, resp) = try await session.bytes(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         if code != 200 {
@@ -142,8 +239,9 @@ final class AnthropicClient {
             throw APIError.http(code, AnthropicClient.errorMessage(buf))
         }
 
-        var full = ""
-        var usage = APIUsage()
+        var stopReason = ""
+        var blocks: [[String: Any]] = []      // this request's blocks, by stream index
+        var partialJSON: [Int: String] = [:]  // tool input arrives as JSON fragments
         for try await line in bytes.lines {
             try Task.checkCancellation()
             guard line.hasPrefix("data: ") else { continue }
@@ -151,24 +249,70 @@ final class AnthropicClient {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any],
                   let type = obj["type"] as? String else { continue }
             switch type {
-            case "content_block_delta":
-                if let delta = obj["delta"] as? [String: Any],
-                   (delta["type"] as? String) == "text_delta",
-                   let text = delta["text"] as? String {
-                    full += text
-                    await onText(text)
-                }
             case "message_start":
                 if let msg = obj["message"] as? [String: Any] {
-                    usage.add(APIUsage(json: msg["usage"] as? [String: Any]))
+                    reply.usage.add(APIUsage(json: msg["usage"] as? [String: Any]))
+                }
+            case "content_block_start":
+                guard let index = obj["index"] as? Int, var block = obj["content_block"] as? [String: Any] else { break }
+                while blocks.count <= index { blocks.append([:]) }
+                switch block["type"] as? String {
+                case "text":
+                    if block["text"] == nil { block["text"] = "" }
+                    await onActivity(nil)
+                case "server_tool_use":
+                    // The input normally arrives as JSON fragments; a block that already carries it is kept as is.
+                    if (block["input"] as? [String: Any])?.isEmpty ?? true { partialJSON[index] = "" }
+                    if let q = (block["input"] as? [String: Any])?["query"] as? String {
+                        await onActivity("Searching: \(q)")
+                    } else {
+                        await onActivity("Searching the web…")
+                    }
+                default: break
+                }
+                blocks[index] = block
+            case "content_block_delta":
+                guard let index = obj["index"] as? Int, index < blocks.count,
+                      let delta = obj["delta"] as? [String: Any] else { break }
+                switch delta["type"] as? String {
+                case "text_delta":
+                    let text = delta["text"] as? String ?? ""
+                    blocks[index]["text"] = (blocks[index]["text"] as? String ?? "") + text
+                    reply.text += text
+                    await onText(text)
+                case "input_json_delta":
+                    partialJSON[index, default: ""] += delta["partial_json"] as? String ?? ""
+                case "citations_delta":
+                    if let c = delta["citation"] as? [String: Any] {
+                        blocks[index]["citations"] = (blocks[index]["citations"] as? [[String: Any]] ?? []) + [c]
+                    }
+                case "thinking_delta":
+                    blocks[index]["thinking"] = (blocks[index]["thinking"] as? String ?? "") + (delta["thinking"] as? String ?? "")
+                case "signature_delta":
+                    blocks[index]["signature"] = delta["signature"] as? String ?? ""
+                default: break
+                }
+            case "content_block_stop":
+                guard let index = obj["index"] as? Int, index < blocks.count else { break }
+                if let raw = partialJSON.removeValue(forKey: index), !raw.isEmpty {
+                    let input = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any] ?? [:]
+                    blocks[index]["input"] = input
+                    if (blocks[index]["name"] as? String) == "web_search", let q = input["query"] as? String {
+                        await onActivity("Searching: \(q)")
+                    }
                 }
             case "message_delta":
                 if let u = obj["usage"] as? [String: Any] {
-                    usage.outputTokens = u["output_tokens"] as? Int ?? usage.outputTokens
+                    reply.usage.outputTokens = u["output_tokens"] as? Int ?? reply.usage.outputTokens
+                    reply.usage.webSearches += APIUsage.searches(in: u)
                 }
-                if let d = obj["delta"] as? [String: Any], (d["stop_reason"] as? String) == "refusal" {
-                    full += "\n\n[The model declined to continue this response.]"
-                    await onText("\n\n[The model declined to continue this response.]")
+                if let d = obj["delta"] as? [String: Any], let s = d["stop_reason"] as? String {
+                    stopReason = s
+                    if s == "refusal" {
+                        let note = "\n\n[The model declined to continue this response.]"
+                        reply.text += note
+                        await onText(note)
+                    }
                 }
             case "error":
                 let msg = (obj["error"] as? [String: Any])?["message"] as? String ?? "unknown"
@@ -177,7 +321,8 @@ final class AnthropicClient {
                 break
             }
         }
-        return (full, usage)
+        reply.content += blocks.filter { !$0.isEmpty }
+        return stopReason
     }
 
     /// Cheap connectivity/key check.

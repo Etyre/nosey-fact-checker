@@ -291,11 +291,33 @@ struct MessageBubble: View {
                     Label("\(message.images.count) screenshot(s)", systemImage: "photo")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if message.text.isEmpty && message.streaming {
+                if message.text.isEmpty && message.streaming && message.activity == nil {
                     ProgressView().controlSize(.small)
-                } else {
+                } else if !message.text.isEmpty {
                     Text(MessageBubble.render(message.text))
                         .textSelection(.enabled)
+                }
+                if let activity = message.activity {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(activity)
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                }
+                if !message.searches.isEmpty && message.activity == nil {
+                    Label(message.searches.joined(separator: " · "), systemImage: "magnifyingglass")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                if !message.sources.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(message.sources, id: \.url) { s in
+                            if let url = URL(string: s.url) {
+                                Link(s.title, destination: url).font(.caption).lineLimit(1)
+                            }
+                        }
+                    }
+                    .padding(.top, 2)
                 }
             }
             .padding(.horizontal, 12).padding(.vertical, 8)

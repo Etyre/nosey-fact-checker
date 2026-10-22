@@ -27,6 +27,7 @@ final class UsageTracker: ObservableObject {
         u.outputTokens = dict["out"] as? Int ?? 0
         u.cacheReadTokens = dict["cr"] as? Int ?? 0
         u.cacheCreationTokens = dict["cc"] as? Int ?? 0
+        u.webSearches = dict["ws"] as? Int ?? 0
         usage = u
     }
 
@@ -35,7 +36,7 @@ final class UsageTracker: ObservableObject {
         calls += 1
         usage.add(u)
         d.set(["calls": calls, "in": usage.inputTokens, "out": usage.outputTokens,
-               "cr": usage.cacheReadTokens, "cc": usage.cacheCreationTokens], forKey: "usage-\(day)")
+               "cr": usage.cacheReadTokens, "cc": usage.cacheCreationTokens, "ws": usage.webSearches], forKey: "usage-\(day)")
     }
 
     /// (input $/MTok, output $/MTok) for the configured model; cache reads billed at 10%, writes at 125%.
@@ -48,6 +49,9 @@ final class UsageTracker: ObservableObject {
         return (2, 10) // claude-sonnet-5
     }
 
+    /// Web search is $10 per 1,000 searches on top of token costs.
+    static let pricePerSearch = 0.01
+
     func estimatedCost(model: String) -> Double {
         let (i, o) = UsageTracker.prices(for: model)
         let u = usage
@@ -55,11 +59,13 @@ final class UsageTracker: ObservableObject {
                 + Double(u.cacheReadTokens) * i * 0.1
                 + Double(u.cacheCreationTokens) * i * 1.25
                 + Double(u.outputTokens) * o) / 1_000_000
+            + Double(u.webSearches) * UsageTracker.pricePerSearch
     }
 
     func summary(model: String) -> String {
         if day != todayKey { load() }
         let cost = estimatedCost(model: model)
-        return String(format: "Today: %d checks · ~$%.2f", calls, cost)
+        let searches = usage.webSearches > 0 ? " · \(usage.webSearches) search\(usage.webSearches == 1 ? "" : "es")" : ""
+        return String(format: "Today: %d checks%@ · ~$%.2f", calls, searches, cost)
     }
 }

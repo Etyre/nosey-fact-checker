@@ -178,10 +178,14 @@ final class FactCheckEngine: ObservableObject {
 
     // MARK: The loop
 
+    /// Seconds one fact-check request may take. Each web search adds a server-side round trip, so the
+    /// budget grows with the search cap; the watchdog below allows a little more than this.
+    private var requestTimeLimit: Double { 120 + Double(settings.checkSearches) * 45 }
+
     private func cycle(force: Bool) async {
         if inFlight {
             // Watchdog: a cycle that has been "in flight" for minutes is hung (seen across sleep). Abandon it.
-            if Date().timeIntervalSince(inFlightSince) > 180 {
+            if Date().timeIntervalSince(inFlightSince) > requestTimeLimit + 60 {
                 FileLog.write("watchdog: abandoning cycle stuck since \(inFlightSince)")
                 inFlight = false
             } else {
@@ -234,8 +238,9 @@ final class FactCheckEngine: ObservableObject {
             let client = self.client, model = settings.model, effort = settings.effort, prompt = settings.factCheckPrompt
             let images = captures.map(\.jpegData)
             let userText = FactCheckEngine.userText(displayCount: captures.count, date: now, recent: Array(recent))
-            let (raw, u) = try await withTimeout(120, "Fact-check request") { try await client.factCheck(
-                model: model, effort: effort, system: prompt, images: images, userText: userText) }
+            let searches = settings.checkSearches
+            let (raw, u) = try await withTimeout(requestTimeLimit, "Fact-check request") { try await client.factCheck(
+                model: model, effort: effort, system: prompt, images: images, userText: userText, maxSearches: searches) }
             usage.record(u)
             lastCheck = now
             retryPending = false
@@ -255,7 +260,7 @@ final class FactCheckEngine: ObservableObject {
                 if !dup { fresh.append(f) }
             }
             lastNote = raw.isEmpty ? "Checked: nothing flagged" : "Checked: \(raw.count) candidate(s), \(fresh.count) new"
-            FileLog.write("check ok (\(reason)): \(captures.count) display(s), \(u.inputTokens) in / \(u.outputTokens) out, \(raw.count) candidate(s), \(fresh.count) new" + (raw.isEmpty ? "" : " :: " + raw.map { "[\(String(format: "%.2f", $0.confidence))] \($0.summary)" }.joined(separator: " | ")))
+            FileLog.write("check ok (\(reason)): \(captures.count) display(s), \(u.inputTokens) in / \(u.outputTokens) out, \(u.webSearches) search(es), \(raw.count) candidate(s), \(fresh.count) new" + (raw.isEmpty ? "" : " :: " + raw.map { "[\(String(format: "%.2f", $0.confidence))] \($0.summary)" }.joined(separator: " | ")))
             if !fresh.isEmpty {
                 findings.insert(contentsOf: fresh, at: 0)
                 store.saveFindings(findings)

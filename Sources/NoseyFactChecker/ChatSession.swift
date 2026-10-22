@@ -10,6 +10,20 @@ struct ChatMessage: Identifiable, Equatable {
     var images: [Data] = []        // attached to user messages only
     var hidden = false             // seed messages rendered as the finding card instead
     var streaming = false
+    /// Status line shown while the model is doing something other than writing (a web search).
+    var activity: String?
+    /// Web searches the model ran for this reply, and the pages it cited.
+    var searches: [String] = []
+    var sources: [Source] = []
+    /// The assistant turn's content blocks as the API returned them (assistant messages only). Sent back
+    /// in place of `text` on later turns so encrypted search results and citations survive the round trip.
+    var content: [[String: Any]] = []
+
+    static func == (a: ChatMessage, b: ChatMessage) -> Bool {
+        a.id == b.id && a.role == b.role && a.text == b.text && a.images == b.images && a.hidden == b.hidden
+            && a.streaming == b.streaming && a.activity == b.activity && a.searches == b.searches && a.sources == b.sources
+            && a.content.count == b.content.count
+    }
 }
 
 /// One conversation, either about a specific finding or a free-form chat about the screen.
@@ -64,16 +78,26 @@ final class ChatSession: ObservableObject, Identifiable {
         task = Task { [weak self] in
             guard let self else { return }
             do {
-                let (_, usage) = try await client.streamChat(
+                let reply = try await client.streamChat(
                     model: settings.model,
                     effort: settings.effort == "low" ? "medium" : settings.effort,
                     system: self.systemPrompt,
                     messages: self.apiMessages(),
+                    maxSearches: settings.chatSearches,
                     onText: { [weak self] delta in
                         guard let self, assistantIndex < self.messages.count else { return }
                         self.messages[assistantIndex].text += delta
+                    },
+                    onActivity: { [weak self] status in
+                        guard let self, assistantIndex < self.messages.count else { return }
+                        self.messages[assistantIndex].activity = status
                     })
-                UsageTracker.shared.record(usage)
+                if assistantIndex < self.messages.count {
+                    self.messages[assistantIndex].content = reply.content
+                    self.messages[assistantIndex].searches = reply.searches
+                    self.messages[assistantIndex].sources = reply.sources
+                }
+                UsageTracker.shared.record(reply.usage)
             } catch is CancellationError {
                 // user pressed Stop; keep whatever arrived
             } catch {
@@ -86,7 +110,10 @@ final class ChatSession: ObservableObject, Identifiable {
                     self.restoreDraft?(failedUser.text)
                 }
             }
-            if assistantIndex < self.messages.count { self.messages[assistantIndex].streaming = false }
+            if assistantIndex < self.messages.count {
+                self.messages[assistantIndex].streaming = false
+                self.messages[assistantIndex].activity = nil
+            }
             self.isStreaming = false
         }
     }
@@ -117,7 +144,13 @@ final class ChatSession: ObservableObject, Identifiable {
                 content.append(textBlock)
                 out.append(["role": "user", "content": content])
             case .assistant:
-                out.append(["role": "assistant", "content": m.text])
+                // A reply that ran searches must go back block-for-block; a plain reply (or one cut short by
+                // Stop, whose blocks were never completed) goes back as text.
+                if !m.content.isEmpty, !m.streaming {
+                    out.append(["role": "assistant", "content": m.content])
+                } else {
+                    out.append(["role": "assistant", "content": m.text])
+                }
             }
         }
         return out

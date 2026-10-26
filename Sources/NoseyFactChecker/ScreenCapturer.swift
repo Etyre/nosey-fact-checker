@@ -38,6 +38,13 @@ final class ScreenCapturer {
         let myBundle = Bundle.main.bundleIdentifier ?? ""
         let skip = excludedBundleIDs.union([myBundle]).map { $0.lowercased() }
         let excluded = content.applications.filter { skip.contains($0.bundleIdentifier.lowercased()) }
+        // Where an excluded app's window sits, a labeled box is painted so the gap is not mistaken for
+        // the real screen. Nosey's own windows stay unmarked. Menus, tooltips and helper windows are skipped.
+        let hidden = content.windows.filter { w in
+            guard let app = w.owningApplication, app.bundleIdentifier != myBundle,
+                  skip.contains(app.bundleIdentifier.lowercased()) else { return false }
+            return w.isOnScreen && w.windowLayer == 0 && w.frame.width >= 40 && w.frame.height >= 40
+        }
 
         var result: [DisplayCapture] = []
         for (i, display) in content.displays.enumerated() {
@@ -50,7 +57,11 @@ final class ScreenCapturer {
             cfg.height = max(1, Int((Double(display.height) * scale).rounded()))
             cfg.showsCursor = false
             cfg.captureResolution = .best
-            let cg = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+            var cg = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
+            let boxes = hidden.filter { $0.frame.intersects(display.frame) }.map {
+                (rect: $0.frame.intersection(display.frame), name: $0.owningApplication?.applicationName ?? "App")
+            }
+            if !boxes.isEmpty { cg = ScreenCapturer.markHidden(cg, boxes: boxes, displayFrame: display.frame) }
             guard let jpeg = ScreenCapturer.jpeg(cg, quality: jpegQuality) else { throw CaptureError.encodeFailed }
             result.append(DisplayCapture(displayIndex: i + 1,
                                          displayID: display.displayID,
@@ -59,6 +70,40 @@ final class ScreenCapturer {
                                          signature: ScreenCapturer.signature(of: cg)))
         }
         return result
+    }
+
+    /// Paints a labeled gray box over each hidden window's area. `boxes` and `displayFrame` are in screen
+    /// points with a top-left origin (as ScreenCaptureKit reports them); the bitmap's origin is bottom-left.
+    static func markHidden(_ image: CGImage, boxes: [(rect: CGRect, name: String)], displayFrame: CGRect) -> CGImage {
+        let w = image.width, h = image.height
+        guard displayFrame.width > 0, displayFrame.height > 0,
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return image }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        let sx = Double(w) / displayFrame.width, sy = Double(h) / displayFrame.height
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        for box in boxes {
+            let x = (box.rect.minX - displayFrame.minX) * sx
+            let top = (box.rect.minY - displayFrame.minY) * sy
+            let rect = CGRect(x: x, y: Double(h) - top - box.rect.height * sy,
+                              width: box.rect.width * sx, height: box.rect.height * sy)
+            ctx.setFillColor(CGColor(gray: 0.3, alpha: 1))
+            ctx.fill(rect)
+            ctx.setStrokeColor(CGColor(gray: 0.75, alpha: 1))
+            ctx.setLineWidth(3)
+            ctx.setLineDash(phase: 0, lengths: [12, 8])
+            ctx.stroke(rect.insetBy(dx: 2, dy: 2))
+            ctx.setLineDash(phase: 0, lengths: [])
+            let fontSize = min(36, max(13, rect.width / 22))
+            let label = NSAttributedString(string: "\(box.name) window hidden by Nosey",
+                                           attributes: [.font: NSFont.boldSystemFont(ofSize: fontSize), .foregroundColor: NSColor.white])
+            let size = label.size()
+            label.draw(at: NSPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return ctx.makeImage() ?? image
     }
 
     static func jpeg(_ image: CGImage, quality: CGFloat) -> Data? {

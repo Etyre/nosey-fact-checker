@@ -300,7 +300,7 @@ final class FactCheckEngine: ObservableObject {
 
     static func userText(displayCount: Int, date: Date, recent: [Finding]) -> String {
         let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short
-        var s = "Screenshot(s) of \(displayCount) display(s), captured \(f.string(from: date)). Display N is image N in order.\n"
+        var s = "Screenshot(s) of \(displayCount) display(s), captured \(f.string(from: date)). Display N is image N in order. A gray box labeled \"hidden by Nosey\" marks a window that was deliberately left out of the screenshot; ignore it.\n"
         if recent.isEmpty {
             s += "\nAlready flagged in the last 24 hours: none.\n"
         } else {

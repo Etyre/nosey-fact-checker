@@ -107,7 +107,7 @@ struct GeneralSettings: View {
             }
 
             Section("Privacy") {
-                Text("Windows of these apps are left out of every screenshot (whatever is behind them shows instead).")
+                Text("Windows of these apps are left out of every screenshot; a gray box labeled “hidden by Nosey” is painted where each one was.")
                     .font(.caption).foregroundStyle(.secondary)
                 ForEach(settings.excludedApps, id: \.self) { id in
                     HStack {

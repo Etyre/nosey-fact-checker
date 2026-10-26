@@ -11,11 +11,15 @@ BUNDLE="build/$APP_NAME.app"
 echo "▸ swift build -c release"
 swift build -c release 2>&1 | grep -v "^\[" | tail -20
 
-rm -rf "$BUNDLE"
-mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
-cp ".build/release/NoseyFactChecker" "$BUNDLE/Contents/MacOS/$APP_NAME"
-cp Resources/Info.plist "$BUNDLE/Contents/Info.plist"
-printf 'APPL????' > "$BUNDLE/Contents/PkgInfo"
+# The bundle is assembled and signed in a temporary directory, then copied into build/. When the
+# project sits in iCloud Drive, the file provider re-adds Finder attributes to files under it at any
+# moment, and codesign refuses a bundle that carries them ("detritus not allowed").
+STAGE="$(mktemp -d "${TMPDIR:-/tmp}/nosey-build.XXXXXX")/$APP_NAME.app"
+trap 'rm -rf "$(dirname "$STAGE")"' EXIT
+mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources"
+cp ".build/release/NoseyFactChecker" "$STAGE/Contents/MacOS/$APP_NAME"
+cp Resources/Info.plist "$STAGE/Contents/Info.plist"
+printf 'APPL????' > "$STAGE/Contents/PkgInfo"
 
 # Prefer a real Apple Development identity so macOS privacy grants (Screen Recording,
 # Notifications) survive rebuilds. Fall back to ad-hoc signing.
@@ -25,23 +29,26 @@ if [ -z "$IDENTITY" ]; then
 fi
 # Copied files can carry extended attributes (Finder info, provenance) that make codesign refuse
 # with "resource fork, Finder information, or similar detritus not allowed". Strip them first.
-xattr -cr "$BUNDLE"
+xattr -cr "$STAGE"
 if [ -n "$IDENTITY" ]; then
   echo "▸ codesign with: $IDENTITY"
-  codesign --force --sign "$IDENTITY" --timestamp=none "$BUNDLE"
+  codesign --force --sign "$IDENTITY" --timestamp=none "$STAGE"
   # A signature without the team ID means macOS will treat every rebuild as a new app and
   # re-ask for Screen Recording. Fail loudly rather than ship that.
-  SIG_INFO="$(codesign -dv "$BUNDLE" 2>&1 || true)"
+  SIG_INFO="$(codesign -dv "$STAGE" 2>&1 || true)"
   if ! echo "$SIG_INFO" | grep "^TeamIdentifier=[A-Z0-9]" >/dev/null; then
     echo "✗ signature is missing the team identifier; refusing to continue" >&2
-    codesign -dv "$BUNDLE" 2>&1 | grep -E "Identifier|Authority" >&2
+    codesign -dv "$STAGE" 2>&1 | grep -E "Identifier|Authority" >&2
     exit 1
   fi
 else
   echo "▸ codesign ad-hoc (no Apple Development identity found; Screen Recording will re-prompt after each rebuild)"
-  codesign --force --sign - "$BUNDLE"
+  codesign --force --sign - "$STAGE"
 fi
-codesign -dv "$BUNDLE" 2>&1 | grep -E "^(Identifier|TeamIdentifier)=" | sed 's/^/▸ /'
+codesign -dv "$STAGE" 2>&1 | grep -E "^(Identifier|TeamIdentifier)=" | sed 's/^/▸ /'
+rm -rf "$BUNDLE"
+mkdir -p "$(dirname "$BUNDLE")"
+ditto "$STAGE" "$BUNDLE"
 echo "▸ built $BUNDLE"
 
 INSTALLED="$HOME/Applications/$APP_NAME.app"

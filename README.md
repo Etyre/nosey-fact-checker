@@ -9,8 +9,9 @@ window about the finding, ask questions, or push back. Press the hotkey again (o
 
 1. Every N seconds (default 5) it captures every connected display with ScreenCaptureKit,
    downscaled to 1568 px on the long edge and JPEG-encoded. Its own windows are excluded, as
-   are the windows of any app on the privacy list in Settings (Signal by default); whatever is
-   behind an excluded window shows in its place.
+   are the windows of any app on the privacy list in Settings (Signal by default). Each excluded
+   window's area is painted over with a gray box labeled "<App> window hidden by Nosey", so the
+   gap is obvious to anyone looking at the capture later, and the model is told to ignore it.
 2. It compares a 64×64 thumbnail against the last capture that was actually sent. A big
    change (default 1% of cells: a window switch, scrolling, a large edit) is sent at once. A
    minor one such as a typed sentence (default 0.3% of cells) is held until the screen has

@@ -50,6 +50,9 @@ final class AppSettings: ObservableObject {
     @Published var checkSearchMaxUses: Int { didSet { d.set(checkSearchMaxUses, forKey: "checkSearchMaxUses") } }
     /// Max searches per chat reply.
     @Published var chatSearchMaxUses: Int { didSet { d.set(chatSearchMaxUses, forKey: "chatSearchMaxUses") } }
+    /// Bundle identifiers of apps whose windows are left out of every screenshot. Whatever is behind
+    /// such a window shows through in its place. Signal is excluded by default.
+    @Published var excludedApps: [String] { didSet { d.set(excludedApps, forKey: "excludedApps") } }
 
     /// Not persisted: status text for the hotkey registration, shown in Settings.
     @Published var hotKeyStatus: String = ""
@@ -76,7 +79,10 @@ final class AppSettings: ObservableObject {
         webSearch = d.object(forKey: "webSearch") as? Bool ?? true
         checkSearchMaxUses = d.object(forKey: "checkSearchMaxUses") as? Int ?? 2
         chatSearchMaxUses = d.object(forKey: "chatSearchMaxUses") as? Int ?? 5
+        excludedApps = d.stringArray(forKey: "excludedApps") ?? AppSettings.defaultExcludedApps
     }
+
+    static let defaultExcludedApps = ["org.whispersystems.signal-desktop"]
 
     /// Searches allowed for a background check, after the toggle.
     var checkSearches: Int { webSearch ? checkSearchMaxUses : 0 }

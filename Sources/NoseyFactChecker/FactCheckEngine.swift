@@ -201,6 +201,7 @@ final class FactCheckEngine: ObservableObject {
 
         do {
             capturer.maxEdge = Int(settings.maxImageEdge)
+            capturer.excludedBundleIDs = Set(settings.excludedApps)
             let capturer = self.capturer
             let captures = try await withTimeout(30, "Screen capture") { try await capturer.captureAll() }
             guard !captures.isEmpty else { lastNote = "No displays found"; return }

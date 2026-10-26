@@ -195,6 +195,7 @@ final class ChatController: ObservableObject {
         guard let engine else { return }
         Task {
             do {
+                engine.capturer.excludedBundleIDs = Set(AppSettings.shared.excludedApps)
                 let caps = try await engine.capturer.captureAll()
                 session.pendingImages = caps.map(\.jpegData)
             } catch {

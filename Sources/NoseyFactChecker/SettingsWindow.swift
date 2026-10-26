@@ -44,6 +44,7 @@ struct GeneralSettings: View {
     @State private var hotKeyDraft = AppSettings.shared.hotKey
     @State private var dismissDraft = AppSettings.shared.dismissHotKey
     @State private var loginError = ""
+    @State private var excludedDraft = ""
 
     var body: some View {
         Form {
@@ -105,6 +106,32 @@ struct GeneralSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
+            Section("Privacy") {
+                Text("Windows of these apps are left out of every screenshot (whatever is behind them shows instead).")
+                    .font(.caption).foregroundStyle(.secondary)
+                ForEach(settings.excludedApps, id: \.self) { id in
+                    HStack {
+                        Text(GeneralSettings.appName(for: id))
+                        Text(id).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button { settings.excludedApps.removeAll { $0 == id } } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless)
+                    }
+                }
+                HStack {
+                    Menu("Add running app…") {
+                        ForEach(GeneralSettings.runningApps(), id: \.id) { app in
+                            Button(app.name) { addExcludedApp(app.id) }
+                        }
+                    }
+                    .fixedSize()
+                    TextField("or a bundle ID, e.g. com.apple.Messages", text: $excludedDraft)
+                        .onSubmit { addExcludedApp(excludedDraft); excludedDraft = "" }
+                    Button("Add") { addExcludedApp(excludedDraft); excludedDraft = "" }
+                        .disabled(excludedDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+
             Section("Web search") {
                 Toggle("Let the model search the web", isOn: $settings.webSearch)
                 Stepper(value: $settings.checkSearchMaxUses, in: 0...10) {
@@ -158,6 +185,33 @@ struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func addExcludedApp(_ id: String) {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !settings.excludedApps.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) else { return }
+        settings.excludedApps.append(trimmed)
+    }
+
+    /// Display name for a bundle ID: the installed app's name if macOS knows it, else the ID itself.
+    static func appName(for bundleID: String) -> String {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
+        }
+        return bundleID
+    }
+
+    /// Apps with a UI that are running now and not yet excluded, by name.
+    static func runningApps() -> [(id: String, name: String)] {
+        let excluded = Set(AppSettings.shared.excludedApps.map { $0.lowercased() })
+        let mine = Bundle.main.bundleIdentifier ?? ""
+        return NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { app -> (id: String, name: String)? in
+                guard let id = app.bundleIdentifier, id != mine, !excluded.contains(id.lowercased()) else { return nil }
+                return (id, app.localizedName ?? id)
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     private func saveKey() {

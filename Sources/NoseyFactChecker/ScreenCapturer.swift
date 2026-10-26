@@ -21,10 +21,13 @@ enum CaptureError: LocalizedError {
 }
 
 /// Captures every connected display with ScreenCaptureKit, downscaled so the longest edge fits
-/// `maxEdge` pixels (the API resizes anything larger to 1568 anyway), excluding Nosey's own windows.
+/// `maxEdge` pixels (the API resizes anything larger to 1568 anyway), excluding Nosey's own windows
+/// and those of any app in `excludedBundleIDs`.
 final class ScreenCapturer {
     var maxEdge: Int = 1568
     var jpegQuality: CGFloat = 0.75
+    /// Apps whose windows are removed from the capture; what is behind them shows through.
+    var excludedBundleIDs: Set<String> = []
 
     static var hasPermission: Bool { CGPreflightScreenCaptureAccess() }
     @discardableResult static func requestPermission() -> Bool { CGRequestScreenCaptureAccess() }
@@ -32,8 +35,9 @@ final class ScreenCapturer {
     func captureAll() async throws -> [DisplayCapture] {
         guard ScreenCapturer.hasPermission else { throw CaptureError.noPermission }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        let myBundle = Bundle.main.bundleIdentifier
-        let excluded = content.applications.filter { $0.bundleIdentifier == myBundle }
+        let myBundle = Bundle.main.bundleIdentifier ?? ""
+        let skip = excludedBundleIDs.union([myBundle]).map { $0.lowercased() }
+        let excluded = content.applications.filter { skip.contains($0.bundleIdentifier.lowercased()) }
 
         var result: [DisplayCapture] = []
         for (i, display) in content.displays.enumerated() {

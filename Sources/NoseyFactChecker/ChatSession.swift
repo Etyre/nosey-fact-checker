@@ -18,11 +18,27 @@ struct ChatMessage: Identifiable, Equatable {
     /// The assistant turn's content blocks as the API returned them (assistant messages only). Sent back
     /// in place of `text` on later turns so encrypted search results and citations survive the round trip.
     var content: [[String: Any]] = []
+    /// Set when this reply withdrew the flag; the model's one-line reason. The marker line itself is
+    /// removed from `text` (it stays in `content`, so later turns still see it).
+    var retraction: String?
 
     static func == (a: ChatMessage, b: ChatMessage) -> Bool {
         a.id == b.id && a.role == b.role && a.text == b.text && a.images == b.images && a.hidden == b.hidden
             && a.streaming == b.streaming && a.activity == b.activity && a.searches == b.searches && a.sources == b.sources
-            && a.content.count == b.content.count
+            && a.content.count == b.content.count && a.retraction == b.retraction
+    }
+
+    /// Splits off a trailing "RETRACTED: ..." line (bold or plain) the model was told to write when it
+    /// withdraws a flag. Returns the text without that line, and the reason.
+    static func splitRetraction(_ text: String) -> (text: String, reason: String?) {
+        let pattern = #"(?m)^[ \t*_]*RETRACTED[ \t*_]*:[ \t*_]*(.+?)[ \t*_]*$"#
+        guard let re = try? NSRegularExpression(pattern: pattern),
+              let m = re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let whole = Range(m.range, in: text), let r = Range(m.range(at: 1), in: text) else { return (text, nil) }
+        let reason = String(text[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reason.isEmpty else { return (text, nil) }
+        var rest = text; rest.removeSubrange(whole)
+        return (rest.trimmingCharacters(in: .whitespacesAndNewlines), reason)
     }
 }
 
@@ -36,6 +52,10 @@ final class ChatSession: ObservableObject, Identifiable {
     @Published var isStreaming = false
     @Published var error: String?
     @Published var pendingImages: [Data] = []
+    /// True once the flag this chat is about has been withdrawn (by the model or the user).
+    @Published private(set) var withdrawn: Bool
+    /// Set by the controller: records the misfire with the engine.
+    var onWithdraw: ((Finding, String) -> Void)?
     private var task: Task<Void, Never>?
     private let client: AnthropicClient
 
@@ -48,6 +68,7 @@ final class ChatSession: ObservableObject, Identifiable {
         self.id = finding?.id ?? UUID()
         self.finding = finding
         self.client = client
+        self.withdrawn = finding?.retractedAt != nil
         if let finding {
             let images = finding.captureURLs.compactMap { try? Data(contentsOf: $0) }
             let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short
@@ -96,6 +117,14 @@ final class ChatSession: ObservableObject, Identifiable {
                     self.messages[assistantIndex].content = reply.content
                     self.messages[assistantIndex].searches = reply.searches
                     self.messages[assistantIndex].sources = reply.sources
+                    if self.finding != nil {
+                        let (text, reason) = ChatMessage.splitRetraction(self.messages[assistantIndex].text)
+                        if let reason {
+                            self.messages[assistantIndex].text = text
+                            self.messages[assistantIndex].retraction = reason
+                            self.withdraw(reason: reason)
+                        }
+                    }
                 }
                 UsageTracker.shared.record(reply.usage)
             } catch is CancellationError {
@@ -122,9 +151,21 @@ final class ChatSession: ObservableObject, Identifiable {
 
     func stop() { task?.cancel() }
 
+    /// Withdraws the flag this chat is about and records it as a misfire. No-op for free chats or when
+    /// the flag is already withdrawn.
+    func withdraw(reason: String) {
+        guard let finding, !withdrawn else { return }
+        withdrawn = true
+        onWithdraw?(finding, reason)
+    }
+
     private var systemPrompt: String {
-        finding != nil ? AppSettings.shared.chatPrompt
-            : AppSettings.shared.chatPrompt + "\n\nIn this conversation you have not flagged anything yet; the user is asking about their screen or about fact-checking in general. If they attach a screenshot, examine it and answer their question."
+        if finding != nil {
+            var p = AppSettings.shared.chatPrompt + "\n\n" + AppSettings.retractionAddendum
+            if withdrawn { p += "\n\nYou have already withdrawn this flag earlier in the conversation; it is recorded as a misfire." }
+            return p
+        }
+        return AppSettings.shared.chatPrompt + "\n\nIn this conversation you have not flagged anything yet; the user is asking about their screen or about fact-checking in general. If they attach a screenshot, examine it and answer their question."
     }
 
     /// Builds the API `messages` array. Images ride along with the user message they were attached to;
@@ -173,6 +214,7 @@ final class ChatController: ObservableObject {
         if let s = sessions.first(where: { $0.id == finding.id }) { return s }
         let s = ChatSession(finding: finding, client: client)
         s.restoreDraft = { [weak self] t in self?.draft = t }
+        s.onWithdraw = { [weak self] f, reason in self?.engine?.withdraw(f.id, reason: reason) }
         sessions.insert(s, at: 0)
         return s
     }

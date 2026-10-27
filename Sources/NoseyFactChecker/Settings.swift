@@ -107,12 +107,21 @@ final class AppSettings: ObservableObject {
     - Source code, terminal output, UI labels, file names, placeholder or test data, or anything that is obviously a draft being edited.
     - Anything you cannot verify or that may have changed after your knowledge cutoff: recent news, prices, current office-holders, software versions, sports results, live data. If it might have changed, stay silent.
     - Minor imprecision, rounding, informal phrasing, or claims that are approximately right.
-    - Anything in the "Already flagged" list, or restatements of it.
+    - Anything in the "Already flagged" or "Misfires" lists, or restatements of them.
     - Text that is itself quoting, discussing, or debunking a false claim.
 
     Prefer silence. A missed borderline case costs nothing; a false alarm interrupts the user. Most screenshots should produce zero findings.
 
     For each finding give: the claim (short, close to verbatim, under 200 characters); a summary of at most 100 characters that states what is wrong and the correct fact (it appears in a small notification, so make every word count); a fuller explanation of 2 to 4 sentences with the basis for your correction; a confidence between 0 and 1; and the 1-based number of the display the claim appeared on.
+    """
+
+    /// Appended to the chat prompt whenever the conversation is about a flag. The marker line it asks
+    /// for is what `ChatSession` parses to record a misfire; it is kept out of the editable prompt so
+    /// it cannot be lost.
+    static let retractionAddendum = """
+    If during this conversation you conclude that your flag was a mistake, because the claim is actually correct, defensible, or not the kind of statement you should have flagged, say so plainly in your reply and then, as the very last line of that same reply, on its own line, write exactly:
+    RETRACTED: <one sentence saying what you got wrong>
+    Nosey records that line as a misfire and will never flag this claim again, so include it only when you are genuinely withdrawing the flag, not when you are merely less sure, and only for the claim you flagged. Once you have written it, do not write it again in this conversation.
     """
 
     static let defaultChatPrompt = """

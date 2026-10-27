@@ -180,7 +180,11 @@ struct SessionView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
-                        if let f = session.finding { FindingCard(finding: f) }
+                        if let f = session.finding {
+                            FindingCard(finding: f, withdrawn: session.withdrawn) {
+                                session.withdraw(reason: "Marked as not an error by the user")
+                            }
+                        }
                         ForEach(session.visibleMessages) { m in
                             MessageBubble(message: m)
                         }
@@ -255,14 +259,23 @@ struct SessionView: View {
 
 struct FindingCard: View {
     let finding: Finding
+    var withdrawn = false
+    var onWithdraw: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label("Flagged \(finding.date.formatted(date: .abbreviated, time: .shortened)) · display \(finding.display) · \(Int(finding.confidence * 100))% confident",
-                      systemImage: "flag.fill")
+                      systemImage: withdrawn ? "flag.slash" : "flag.fill")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
+                if withdrawn {
+                    Text("Withdrawn · won't be flagged again").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Button("Not an error") { onWithdraw() }
+                        .buttonStyle(.link).font(.caption)
+                        .help("Withdraw this flag and never flag this claim again")
+                }
                 if let url = finding.captureURLs.first, FileManager.default.fileExists(atPath: url.path) {
                     Button("Open screenshot") { NSWorkspace.shared.open(url) }
                         .buttonStyle(.link).font(.caption)
@@ -308,6 +321,12 @@ struct MessageBubble: View {
                     Label(message.searches.joined(separator: " · "), systemImage: "magnifyingglass")
                         .font(.caption).foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                }
+                if let r = message.retraction {
+                    Label("Flag withdrawn: \(r) Nosey won't flag this claim again.", systemImage: "flag.slash")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .padding(.top, 2)
                 }
                 if !message.sources.isEmpty {
                     VStack(alignment: .leading, spacing: 2) {

@@ -268,7 +268,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             sub.addItem(none)
         } else {
             for f in engine.findings.prefix(15) {
-                let title = "\(f.read ? "" : "● ")\(f.date.formatted(date: .omitted, time: .shortened))  \(String(f.summary.prefix(70)))"
+                let mark = f.retractedAt != nil ? "✗ " : (f.read ? "" : "● ")
+                let title = "\(mark)\(f.date.formatted(date: .omitted, time: .shortened))  \(String(f.summary.prefix(70)))"
                 let item = NSMenuItem(title: title, action: #selector(openFinding(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = f.id

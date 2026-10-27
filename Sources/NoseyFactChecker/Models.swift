@@ -12,23 +12,13 @@ struct Finding: Identifiable, Codable, Equatable {
     /// File names (inside `Paths.captures`) of the screenshots this finding came from, one per display.
     let captureFiles: [String]
     var read: Bool
+    /// Set when the flag was withdrawn (the model retracted it in chat, or the user marked it as not an
+    /// error). The claim is then also on the misfire list.
+    var retractedAt: Date? = nil
 
     var captureURLs: [URL] { captureFiles.map { Paths.captures.appendingPathComponent($0) } }
 
-    /// Normalized word set used for fuzzy duplicate detection.
-    var claimWords: Set<String> {
-        Set(claim.lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { $0.count > 2 })
-    }
-
-    func isSimilar(to other: Finding) -> Bool {
-        let a = claimWords, b = other.claimWords
-        guard !a.isEmpty, !b.isEmpty else { return claim == other.claim }
-        let inter = Double(a.intersection(b).count)
-        let union = Double(a.union(b).count)
-        return inter / union >= 0.6
-    }
+    func isSimilar(to other: Finding) -> Bool { ClaimText.similar(claim, other.claim) }
 
     /// Text shown as the assistant's opening message in the chat for this finding.
     var assistantText: String {

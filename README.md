@@ -24,11 +24,19 @@ window about the finding, ask questions, or push back. Press the hotkey again (o
    search tool (on by default, capped at 2 searches per check) so it can verify a claim before
    flagging it, including claims about things after its training cutoff.
 4. Findings below your confidence threshold, or similar to something already flagged in the
-   last 24 h, are dropped. The rest become notifications (at most 3 per check).
+   last 24 h, are dropped, as is anything matching a known misfire (below). The rest become
+   notifications (at most 3 per check).
 5. The chat window seeds the conversation with the screenshot(s) and the finding, so the model
    can discuss exactly what it saw. Replies stream token by token; when the model searches the
    web, the queries show while it runs and the cited pages are listed under the reply as links.
    The input field is focused automatically.
+6. If, while discussing a flag, the model concludes it was wrong, it ends that reply with a
+   `RETRACTED: <reason>` line. Nosey strips the line, shows "Flag withdrawn" under the reply,
+   and adds the claim to a persistent misfire list (`misfires.json`). The "Not an error" button
+   on the flag card does the same by hand. Every later check is sent the misfire list with an
+   instruction never to flag those claims again, and any candidate that still matches one is
+   dropped before it can become a notification. Settings lists the misfires and lets you
+   remove one if you change your mind.
 
 ## Build and run
 
@@ -83,6 +91,7 @@ Everything lives in Settings:
 - **Prompts tab**: edit the fact-check system prompt to teach it what is and isn't worth
   flagging, and the chat prompt for how it should argue. Reset buttons restore the defaults.
 - **Interval, change and minor-edit thresholds, settle delay, confidence threshold, retention**: cost and noise controls.
+- **Misfires**: the claims whose flags were withdrawn; remove one to allow it to be flagged again.
 - **Web search**: on/off, plus caps per background check and per chat reply. Searches cost
   $10 per 1,000 on top of tokens, and each one's results add roughly 10–20K input tokens.
   Set the per-check cap to 0 to keep search for chat only.
@@ -104,5 +113,5 @@ figure. Pause for 1 Hour is there for meetings and video.
 - `Sources/NoseyFactChecker/` – Swift sources (SwiftUI + AppKit, no third-party dependencies)
 - `Resources/Info.plist` – bundle metadata (`LSUIElement` keeps it out of the Dock)
 - `build.sh` – builds, bundles, and signs `build/Nosey.app`
-- Data: `~/Library/Application Support/Nosey/` (captures, findings.json, api-key)
+- Data: `~/Library/Application Support/Nosey/` (captures, findings.json, misfires.json, api-key)
 - Logs: Console.app, subsystem `com.elityre.nosey`

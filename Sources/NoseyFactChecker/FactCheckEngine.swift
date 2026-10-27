@@ -91,7 +91,7 @@ final class FactCheckEngine: ObservableObject {
 
     init() {
         findings = store.loadFindings().sorted { $0.date > $1.date }
-        FileLog.write("engine init; \(findings.count) stored findings")
+        FileLog.write("engine init; \(findings.count) stored findings, \(MisfireStore.shared.misfires.count) misfires")
         let wc = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
             wc.addObserver(forName: name, object: nil, queue: .main) { [weak self] n in
@@ -167,6 +167,20 @@ final class FactCheckEngine: ObservableObject {
 
     func finding(id: UUID) -> Finding? { findings.first { $0.id == id } }
 
+    /// Withdraws a flag: marks the finding retracted and puts its claim on the misfire list, so no later
+    /// check can flag it again. Returns false if the finding is unknown or already withdrawn.
+    @discardableResult
+    func withdraw(_ id: UUID, reason: String) -> Bool {
+        guard let i = findings.firstIndex(where: { $0.id == id }), findings[i].retractedAt == nil else { return false }
+        findings[i].retractedAt = Date()
+        findings[i].read = true
+        store.saveFindings(findings)
+        let f = findings[i]
+        MisfireStore.shared.add(claim: f.claim, summary: f.summary, reason: reason, findingID: f.id)
+        FileLog.write("flag withdrawn: \(f.summary)")
+        return true
+    }
+
     private func reschedule() {
         timer?.invalidate()
         guard isWatching else { return }
@@ -238,7 +252,9 @@ final class FactCheckEngine: ObservableObject {
             let recent = findings.filter { now.timeIntervalSince($0.date) < 24 * 3600 }.prefix(30)
             let client = self.client, model = settings.model, effort = settings.effort, prompt = settings.factCheckPrompt
             let images = captures.map(\.jpegData)
-            let userText = FactCheckEngine.userText(displayCount: captures.count, date: now, recent: Array(recent))
+            let misfires = MisfireStore.shared.misfires
+            let userText = FactCheckEngine.userText(displayCount: captures.count, date: now, recent: Array(recent),
+                                                    misfires: Array(misfires.prefix(100)))
             let searches = settings.checkSearches
             let (raw, u) = try await withTimeout(requestTimeLimit, "Fact-check request") { try await client.factCheck(
                 model: model, effort: effort, system: prompt, images: images, userText: userText, maxSearches: searches) }
@@ -248,6 +264,7 @@ final class FactCheckEngine: ObservableObject {
             if case .error = state { state = .watching }
 
             var fresh: [Finding] = []
+            var suppressed = 0
             for r in raw {
                 // The model occasionally returns a blank placeholder finding instead of an empty list.
                 guard !r.claim.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
@@ -257,11 +274,17 @@ final class FactCheckEngine: ObservableObject {
                                 summary: String(r.summary.prefix(140)),
                                 explanation: r.explanation, confidence: min(1, max(0, r.confidence)),
                                 display: max(1, r.display), captureFiles: files, read: false)
+                // A claim that was flagged before and withdrawn is never flagged again, whatever the model says.
+                if let m = MisfireStore.shared.match(for: f.claim) {
+                    suppressed += 1
+                    FileLog.write("suppressed (misfire \(m.date.formatted(date: .abbreviated, time: .shortened))): \(f.summary)")
+                    continue
+                }
                 let dup = findings.contains { $0.isSimilar(to: f) } || fresh.contains { $0.isSimilar(to: f) }
                 if !dup { fresh.append(f) }
             }
             lastNote = raw.isEmpty ? "Checked: nothing flagged" : "Checked: \(raw.count) candidate(s), \(fresh.count) new"
-            FileLog.write("check ok (\(reason)): \(captures.count) display(s), \(u.inputTokens) in / \(u.outputTokens) out, \(u.webSearches) search(es), \(raw.count) candidate(s), \(fresh.count) new" + (raw.isEmpty ? "" : " :: " + raw.map { "[\(String(format: "%.2f", $0.confidence))] \($0.summary)" }.joined(separator: " | ")))
+            FileLog.write("check ok (\(reason)): \(captures.count) display(s), \(u.inputTokens) in / \(u.outputTokens) out, \(u.webSearches) search(es), \(raw.count) candidate(s), \(fresh.count) new" + (suppressed > 0 ? ", \(suppressed) suppressed as misfire" : "") + (raw.isEmpty ? "" : " :: " + raw.map { "[\(String(format: "%.2f", $0.confidence))] \($0.summary)" }.joined(separator: " | ")))
             if !fresh.isEmpty {
                 findings.insert(contentsOf: fresh, at: 0)
                 store.saveFindings(findings)
@@ -298,7 +321,7 @@ final class FactCheckEngine: ObservableObject {
         }
     }
 
-    static func userText(displayCount: Int, date: Date, recent: [Finding]) -> String {
+    static func userText(displayCount: Int, date: Date, recent: [Finding], misfires: [Misfire] = []) -> String {
         let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short
         var s = "Screenshot(s) of \(displayCount) display(s), captured \(f.string(from: date)). Display N is image N in order. A gray box labeled \"hidden by Nosey\" marks a window that was deliberately left out of the screenshot; ignore it.\n"
         if recent.isEmpty {
@@ -306,6 +329,10 @@ final class FactCheckEngine: ObservableObject {
         } else {
             s += "\nAlready flagged in the last 24 hours (do not repeat these or restatements of them):\n"
             for r in recent { s += "- \(r.claim)\n" }
+        }
+        if !misfires.isEmpty {
+            s += "\nMisfires: claims you flagged before and then withdrew because the flag was wrong. NEVER flag these again, nor restatements of them, even if they look wrong to you now:\n"
+            for m in misfires { s += "- \(m.claim) (withdrawn: \(m.reason))\n" }
         }
         s += "\nReport findings per your instructions. Return an empty list if nothing qualifies."
         return s

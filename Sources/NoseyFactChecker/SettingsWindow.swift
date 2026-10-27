@@ -38,6 +38,7 @@ struct SettingsView: View {
 
 struct GeneralSettings: View {
     @ObservedObject private var settings = AppSettings.shared
+    @ObservedObject private var misfires = MisfireStore.shared
     let engine: FactCheckEngine
     @State private var apiKey = APIKeyStore.read() ?? ""
     @State private var keyStatus = ""
@@ -129,6 +130,30 @@ struct GeneralSettings: View {
                         .onSubmit { addExcludedApp(excludedDraft); excludedDraft = "" }
                     Button("Add") { addExcludedApp(excludedDraft); excludedDraft = "" }
                         .disabled(excludedDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+
+            Section("Misfires") {
+                Text("Flags Nosey withdrew after discussing them, or that you marked as not an error. Every check is told about these claims and any match is dropped, so none of them is ever flagged again.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if misfires.misfires.isEmpty {
+                    Text("None yet.").foregroundStyle(.secondary)
+                }
+                ForEach(misfires.misfires) { m in
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("“\(m.claim)”").lineLimit(2)
+                            Text("\(m.date.formatted(date: .abbreviated, time: .shortened)) · \(m.reason)")
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        Spacer()
+                        Button { misfires.remove(m.id) } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless)
+                            .help("Forget this misfire; the claim may be flagged again")
+                    }
+                }
+                if !misfires.misfires.isEmpty {
+                    Button("Clear all") { misfires.removeAll() }
                 }
             }
 

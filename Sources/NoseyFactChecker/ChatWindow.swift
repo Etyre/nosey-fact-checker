@@ -193,6 +193,11 @@ struct SessionView: View {
                                 .foregroundStyle(.red)
                                 .textSelection(.enabled)
                         }
+                        if session.halted {
+                            Label("The model contacted Eli, so this conversation has stopped. Read and continue it with `llm-inbox` in a terminal.", systemImage: "envelope.badge")
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
                         Color.clear.frame(height: 1).id("bottom")
                     }
                     .padding(14)
@@ -235,7 +240,7 @@ struct SessionView: View {
                     .focused($inputFocused)
                     .onSubmit { send() }
                     .onExitCommand { windowController.hide() }
-                    .disabled(session.isStreaming)
+                    .disabled(session.isStreaming || session.halted)
 
                 if session.isStreaming {
                     Button { session.stop() } label: { Image(systemName: "stop.circle.fill") }
@@ -321,6 +326,11 @@ struct MessageBubble: View {
                     Label(message.searches.joined(separator: " · "), systemImage: "magnifyingglass")
                         .font(.caption).foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                }
+                if message.captures > 0 && message.activity == nil {
+                    Label(message.captures == 1 ? "Took a fresh screenshot" : "Took \(message.captures) fresh screenshots",
+                          systemImage: "camera.viewfinder")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if let r = message.retraction {
                     Label("Flag withdrawn: \(r) Nosey won't flag this claim again.", systemImage: "flag.slash")

@@ -9,3 +9,5 @@ build/
 *.xcworkspace
 xcuserdata/
 .swiftpm/
+# Logs, if ever written next to the sources
+*.log

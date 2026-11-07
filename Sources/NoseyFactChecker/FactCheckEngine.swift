@@ -13,10 +13,11 @@ enum EngineError: LocalizedError {
     }
 }
 
-/// Plain-text log at ~/Library/Application Support/Nosey/nosey.log (os_log entries proved hard to
-/// retrieve). Rotated when it passes 2 MB.
+/// Plain-text log at ~/Library/Logs/nosey.log (os_log entries proved hard to retrieve). Rotated when it
+/// passes 2 MB. Builds before 2026-11-07 wrote it to ~/Library/Application Support/Nosey/nosey.log.
 enum FileLog {
-    static let url = Paths.appSupport.appendingPathComponent("nosey.log")
+    static let url = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first!
+        .appendingPathComponent("Logs/nosey.log")
     private static let queue = DispatchQueue(label: "nosey.filelog")
     private static let stamp: DateFormatter = { let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"; return f }()
 
@@ -27,7 +28,7 @@ enum FileLog {
         let line = "\(stamp.string(from: Date())) \(message)\n"
         queue.async {
             let fm = FileManager.default
-            try? fm.createDirectory(at: Paths.appSupport, withIntermediateDirectories: true)
+            try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             if let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int, size > 2_000_000 {
                 try? fm.moveItem(at: url, to: url.deletingPathExtension().appendingPathExtension("old.log"))
             }
@@ -250,15 +251,16 @@ final class FactCheckEngine: ObservableObject {
             let now = Date()
             let files = store.save(captures, at: now)
             let recent = findings.filter { now.timeIntervalSince($0.date) < 24 * 3600 }.prefix(30)
-            let client = self.client, model = settings.model, effort = settings.effort, prompt = settings.factCheckPrompt
+            let client = self.client, model = settings.checkModel, effort = settings.effort, prompt = settings.factCheckPrompt
             let images = captures.map(\.jpegData)
             let misfires = MisfireStore.shared.misfires
-            let userText = FactCheckEngine.userText(displayCount: captures.count, date: now, recent: Array(recent),
-                                                    misfires: Array(misfires.prefix(100)))
+            let context = FactCheckEngine.contextText(recent: Array(recent), misfires: Array(misfires.prefix(100)))
+            let userText = FactCheckEngine.userText(displayCount: captures.count, date: now)
             let searches = settings.checkSearches
             let (raw, u) = try await withTimeout(requestTimeLimit, "Fact-check request") { try await client.factCheck(
-                model: model, effort: effort, system: prompt, images: images, userText: userText, maxSearches: searches) }
-            usage.record(u)
+                model: model, effort: effort, system: prompt, context: context, images: images, userText: userText,
+                maxSearches: searches) }
+            usage.record(u, model: model)
             lastCheck = now
             retryPending = false
             if case .error = state { state = .watching }
@@ -294,6 +296,12 @@ final class FactCheckEngine: ObservableObject {
             }
         } catch is CancellationError {
             // ignore
+        } catch APIError.contactedEli(let message) {
+            // The model asked to talk to Eli. That is the end of this task: no retry, and no more checks
+            // until Eli has read the message and chosen Resume Watching.
+            FileLog.write("check stopped: model contacted Eli: \(message.prefix(300))")
+            pause()
+            lastNote = "the model contacted Eli; read it with llm-inbox, then Resume Watching"
         } catch {
             let msg = error.localizedDescription
             log.error("cycle failed: \(msg, privacy: .public)")
@@ -321,20 +329,29 @@ final class FactCheckEngine: ObservableObject {
         }
     }
 
-    static func userText(displayCount: Int, date: Date, recent: [Finding], misfires: [Misfire] = []) -> String {
-        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short
-        var s = "Screenshot(s) of \(displayCount) display(s), captured \(f.string(from: date)). Display N is image N in order. A gray box labeled \"hidden by Nosey\" marks a window that was deliberately left out of the screenshot; ignore it.\n"
+    /// The recent-flag and misfire lists. They go in the system prompt, cached, because they change only
+    /// when a flag is added or withdrawn, while a check runs every few seconds. The model must see them
+    /// before it decides to investigate anything: a known misfire left on screen would otherwise be
+    /// re-flagged, and possibly re-searched, on every check. Nothing here may vary per check, or the
+    /// cache would miss every time.
+    static func contextText(recent: [Finding], misfires: [Misfire]) -> String {
+        var s = ""
         if recent.isEmpty {
-            s += "\nAlready flagged in the last 24 hours: none.\n"
+            s += "Already flagged in the last 24 hours: none.\n"
         } else {
-            s += "\nAlready flagged in the last 24 hours (do not repeat these or restatements of them):\n"
+            s += "Already flagged in the last 24 hours (do not repeat these or restatements of them):\n"
             for r in recent { s += "- \(r.claim)\n" }
         }
         if !misfires.isEmpty {
-            s += "\nMisfires: claims you flagged before and then withdrew because the flag was wrong. NEVER flag these again, nor restatements of them, even if they look wrong to you now:\n"
+            s += "\nMisfires: claims you flagged before and then withdrew because the flag was wrong. NEVER flag these again, nor restatements of them, even if they look wrong to you now, and do not spend a search on them:\n"
             for m in misfires { s += "- \(m.claim) (withdrawn: \(m.reason))\n" }
         }
-        s += "\nReport findings per your instructions. Return an empty list if nothing qualifies."
         return s
+    }
+
+    /// The per-check text that accompanies the screenshots.
+    static func userText(displayCount: Int, date: Date) -> String {
+        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short
+        return "Screenshot(s) of \(displayCount) display(s), captured \(f.string(from: date)). Display N is image N in order. A gray box labeled \"hidden by Nosey\" marks a window that was deliberately left out of the screenshot; ignore it.\n\nReport findings per your instructions, honoring the already-flagged and misfire lists. Return an empty list if nothing qualifies."
     }
 }

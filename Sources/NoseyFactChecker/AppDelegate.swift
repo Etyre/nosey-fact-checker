@@ -224,7 +224,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 status = "Watching · \(engine.lastNote)"
             }
         case .paused(let until):
-            if let until { status = "Paused until \(until.formatted(date: .omitted, time: .shortened))" } else { status = "Paused" }
+            if let until { status = "Paused until \(until.formatted(date: .omitted, time: .shortened))" }
+            else if engine.lastNote == "Paused" { status = "Paused" }
+            else { status = "Paused · \(engine.lastNote)" }
         case .error(let msg):
             status = "Problem (will retry): \(msg)"
         }
@@ -282,7 +284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         recent.submenu = sub
         menu.addItem(recent)
 
-        let usage = NSMenuItem(title: UsageTracker.shared.summary(model: settings.model) + " (estimate)", action: nil, keyEquivalent: "")
+        let usage = NSMenuItem(title: UsageTracker.shared.summary() + " (estimate)", action: nil, keyEquivalent: "")
         usage.isEnabled = false
         menu.addItem(usage)
         menu.addItem(.separator())

@@ -18,7 +18,10 @@ final class AppSettings: ObservableObject {
     static let shared = AppSettings()
     private let d = UserDefaults.standard
 
-    @Published var model: String { didSet { d.set(model, forKey: "model") } }
+    /// Model for the background checks. They run every few seconds, so a cheap model matters most here.
+    @Published var checkModel: String { didSet { d.set(checkModel, forKey: "checkModel") } }
+    /// Model for the chat window, where the model argues a flag with the user.
+    @Published var chatModel: String { didSet { d.set(chatModel, forKey: "chatModel") } }
     /// Required by identity-linked API keys; sent as the anthropic-workspace-id header when non-empty.
     @Published var workspaceID: String { didSet { d.set(workspaceID, forKey: "workspaceID") } }
     @Published var effort: String { didSet { d.set(effort, forKey: "effort") } }
@@ -58,7 +61,9 @@ final class AppSettings: ObservableObject {
     @Published var hotKeyStatus: String = ""
 
     private init() {
-        model = d.string(forKey: "model") ?? "claude-sonnet-5"
+        checkModel = d.string(forKey: "checkModel") ?? "claude-haiku-5-5"
+        // Before the split there was one "model" setting; a custom value carries over to chat.
+        chatModel = d.string(forKey: "chatModel") ?? d.string(forKey: "model") ?? "claude-sonnet-5"
         workspaceID = d.string(forKey: "workspaceID") ?? ""
         effort = d.string(forKey: "effort") ?? "low"
         intervalSeconds = d.object(forKey: "intervalSeconds") as? Double ?? 5
@@ -92,6 +97,11 @@ final class AppSettings: ObservableObject {
     /// Appended to the system prompt (after the cached part) whenever the web search tool is on.
     static let webSearchAddendum = """
     You have a web_search tool. Use it to verify a claim you are not sure about, and to check claims about things that may have changed after your knowledge cutoff (recent events, current office-holders, prices, versions, results): with search available, you may flag those too, but only once a search has confirmed they are wrong. Searches cost money and time, so search only when it changes what you would say, and keep queries specific. If a search does not settle the question, say so rather than guessing.
+    """
+
+    /// Appended to the chat prompt whenever the model has the capture_screen tool.
+    static let captureToolAddendum = """
+    You have a capture_screen tool that takes a fresh screenshot of all the user's displays and returns it to you. The screenshots already in this conversation show the screen as it was when they were taken, possibly some time ago. Call the tool when the user refers to what is on their screen now, asks what changed, or asks you to look again, and whenever your answer depends on the current state of the screen. Do not call it for questions about the claim itself that the existing screenshot or your knowledge can answer. Nosey's own chat window is excluded from the capture, so you will not see this conversation in it.
     """
 
     static let defaultFactCheckPrompt = """
@@ -129,6 +139,19 @@ final class AppSettings: ObservableObject {
 
     Answer questions directly and concisely. If the user pushes back, engage with their argument honestly: concede when they are right or when the claim turns out to be defensible, and hold your position with evidence when it is not. Distinguish clearly between what you know and what you are unsure of, and say so when something may have changed after your knowledge cutoff. Use plain prose with light formatting and no headers.
     """
+}
+
+/// Text the user has typed but not yet submitted (the chat input, the hotkey and bundle-ID fields in
+/// Settings). Saved to UserDefaults on every change and restored when the field is next shown, so a draft
+/// survives switching conversations, closing the window and restarting Nosey. Cleared only when the text
+/// is submitted. Fields bound straight to an `AppSettings` property persist on their own and need none of this.
+enum Drafts {
+    private static let d = UserDefaults.standard
+    static func load(_ key: String) -> String? { d.string(forKey: "draft." + key) }
+    static func save(_ key: String, _ text: String) {
+        if text.isEmpty { d.removeObject(forKey: "draft." + key) } else { d.set(text, forKey: "draft." + key) }
+    }
+    static func clear(_ key: String) { d.removeObject(forKey: "draft." + key) }
 }
 
 /// The API key lives in a 0600 file under Application Support (not UserDefaults, which is world-readable

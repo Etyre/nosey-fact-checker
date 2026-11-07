@@ -40,12 +40,14 @@ struct GeneralSettings: View {
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var misfires = MisfireStore.shared
     let engine: FactCheckEngine
+    /// The key is a secret, so it is the one field whose text is never saved as a draft.
     @State private var apiKey = APIKeyStore.read() ?? ""
     @State private var keyStatus = ""
-    @State private var hotKeyDraft = AppSettings.shared.hotKey
-    @State private var dismissDraft = AppSettings.shared.dismissHotKey
+    // Typed-but-not-applied text comes back after a restart (see `Drafts`); Apply clears the draft.
+    @State private var hotKeyDraft = Drafts.load("settings.hotKey") ?? AppSettings.shared.hotKey
+    @State private var dismissDraft = Drafts.load("settings.dismissHotKey") ?? AppSettings.shared.dismissHotKey
     @State private var loginError = ""
-    @State private var excludedDraft = ""
+    @State private var excludedDraft = Drafts.load("settings.excludedApp") ?? ""
 
     var body: some View {
         Form {
@@ -61,7 +63,10 @@ struct GeneralSettings: View {
                     .onSubmit { if case .error = engine.state { engine.checkNow() } }
                 Text("Newer keys are tied to your identity and require the workspace they act in. Find the ID in the Anthropic Console under Settings › Workspaces.")
                     .font(.caption).foregroundStyle(.secondary)
-                TextField("Model", text: $settings.model)
+                TextField("Model for background checks", text: $settings.checkModel)
+                TextField("Model for chat", text: $settings.chatModel)
+                Text("Checks run every few seconds, so a cheap model (Haiku) keeps the bill down; chat is where a stronger model (Sonnet) earns its price. Any current Claude model ID works.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Picker("Effort", selection: $settings.effort) {
                     Text("Low (fastest, cheapest)").tag("low")
                     Text("Medium").tag("medium")
@@ -127,6 +132,7 @@ struct GeneralSettings: View {
                     }
                     .fixedSize()
                     TextField("or a bundle ID, e.g. com.apple.Messages", text: $excludedDraft)
+                        .onChange(of: excludedDraft) { _, t in Drafts.save("settings.excludedApp", t) }
                         .onSubmit { addExcludedApp(excludedDraft); excludedDraft = "" }
                     Button("Add") { addExcludedApp(excludedDraft); excludedDraft = "" }
                         .disabled(excludedDraft.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -174,13 +180,15 @@ struct GeneralSettings: View {
             Section("Chat window") {
                 HStack {
                     TextField("Chat hotkey, e.g. ctrl+cmd+j", text: $hotKeyDraft)
-                        .onSubmit { settings.hotKey = hotKeyDraft }
-                    Button("Apply") { settings.hotKey = hotKeyDraft }
+                        .onChange(of: hotKeyDraft) { _, t in Drafts.save("settings.hotKey", t) }
+                        .onSubmit { applyHotKey() }
+                    Button("Apply") { applyHotKey() }
                 }
                 HStack {
                     TextField("Dismiss-top-notification hotkey, e.g. ctrl+cmd+k", text: $dismissDraft)
-                        .onSubmit { settings.dismissHotKey = dismissDraft }
-                    Button("Apply") { settings.dismissHotKey = dismissDraft }
+                        .onChange(of: dismissDraft) { _, t in Drafts.save("settings.dismissHotKey", t) }
+                        .onSubmit { applyDismissHotKey() }
+                    Button("Apply") { applyDismissHotKey() }
                 }
                 if !settings.hotKeyStatus.isEmpty {
                     Text(settings.hotKeyStatus).font(.caption).foregroundStyle(.secondary)
@@ -210,6 +218,16 @@ struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func applyHotKey() {
+        settings.hotKey = hotKeyDraft
+        Drafts.clear("settings.hotKey")
+    }
+
+    private func applyDismissHotKey() {
+        settings.dismissHotKey = dismissDraft
+        Drafts.clear("settings.dismissHotKey")
     }
 
     private func addExcludedApp(_ id: String) {
@@ -250,7 +268,7 @@ struct GeneralSettings: View {
         keyStatus = "Testing…"
         Task {
             do {
-                let reply = try await engine.client.ping(model: settings.model)
+                let reply = try await engine.client.ping(model: settings.checkModel)
                 keyStatus = "Works. Model replied: \(reply.trimmingCharacters(in: .whitespacesAndNewlines))"
             } catch {
                 keyStatus = error.localizedDescription

@@ -85,7 +85,7 @@ enum LLMContact {
                                call: (_ messages: [[String: Any]], _ decision: [String: Any]?) async throws -> [String: Any])
         async -> (contact: Contact?, kept: (messages: [[String: Any]], response: [String: Any])?) {
         // nil for a response without a contact_eli call, an "@ELI:" line included: that is never questioned.
-        if let plan = await confirmPlan(response: response, tools: tools) {
+        if let plan = await confirmPlan(model: model, response: response, tools: tools) {
             do {
                 guard let ask = plan["ask"] as? [[String: Any]], let keep = plan["keep"] as? [[String: Any]],
                       let decision = plan["decision"] as? [String: Any],
@@ -115,10 +115,11 @@ enum LLMContact {
         return (await check(model: model, system: system, messages: messages, response: response, tools: tools), nil)
     }
 
-    /// `llm_contact.py confirm`: nil when the response has no `contact_eli` call (or the script could not say),
+    /// `llm_contact.py confirm`: nil when the response has no `contact_eli` call, the model is not one the shared
+    /// confirm step is validated for (it decides from `model`), or the script could not say,
     /// else the messages and request arguments for the question.
-    private static func confirmPlan(response: [String: Any], tools: [[String: Any]]) async -> [String: Any]? {
-        guard let data = try? JSONSerialization.data(withJSONObject: ["response": response, "tools": tools]) else { return nil }
+    private static func confirmPlan(model: String, response: [String: Any], tools: [[String: Any]]) async -> [String: Any]? {
+        guard let data = try? JSONSerialization.data(withJSONObject: ["model": model, "response": response, "tools": tools]) else { return nil }
         return await Task.detached(priority: .utility) { () -> [String: Any]? in
             guard let (status, out) = run("confirm", payload: data) else { return nil }
             guard status == 0 else { fail("llm_contact.py confirm exited \(status): \(out.suffix(500))"); return nil }

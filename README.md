@@ -60,10 +60,16 @@ silent otherwise. Swift (SwiftUI + AppKit), no third-party dependencies.
    rather than sending a prompt without the preamble; a failure to run the Python check is
    logged and does not stop Nosey.
 8. **Confirm step** (added 2026-11-10, the protocol in `../shared/README.md`, "Confirm step in any
-   other language"). Haiku uses `contact_eli` for routine remarks, most of all on the JSON-only
-   fact check where the tool is the only place prose can go, and each one paused watching. So a
-   response with a `contact_eli` call is not sent straight away: `llm_contact.py confirm` supplies
-   one forced-choice question, which Nosey asks with the same model and system prompt (not
+   other language"). **Inactive with Nosey's default models**: the step runs only for models in
+   the shared `CONFIRM_MODELS` list in `llm_contact.py`, today just `claude-haiku-4-5`. Checks
+   and the Settings Test ping default to `claude-haiku-5-5` and chat to `claude-sonnet-5`, neither
+   on the list, so their `contact_eli` calls are sent straight away as in step 7. The step takes
+   effect only if a listed model is set in Settings, or the shared list grows; Nosey sends the
+   model name to `llm_contact.py confirm` and the script decides. The reason for the step: Haiku
+   uses `contact_eli` for routine remarks, most of all on the JSON-only fact check where the tool
+   is the only place prose can go, and each one paused watching. For a listed model, a response
+   with a `contact_eli` call is not sent straight away: `llm_contact.py confirm` supplies one
+   forced-choice question, which Nosey asks with the same model and system prompt (not
    streamed, no thinking, no JSON output format). Only an explicit "task remark, keep working"
    answer continues: Nosey makes its normal call again on the longer exchange, runs `check` on
    that reply, and if it is clean passes the first reply to `llm_contact.py unconfirmed`, which
@@ -267,6 +273,11 @@ macOS will ask for Screen Recording again after each rebuild.
   that one request drops `thinking` and the whole `output_config` (effort and JSON format). The model's
   own turn, thinking block included, goes back unchanged and the API accepts that with thinking off
   (checked live against `claude-haiku-5-5`, 2026-11-10).
+- That the API accepts the question does not make the confirm step safe for a model. Shared testing
+  on 2026-11-10 found Haiku 5.5 and Opus 5 answered "keep working" to prefilled "I want to stop"
+  messages (0 of 12 sent), Sonnet 5 dropped 3 of 12 of its own objections, and Sonnet 5.5, Opus 5.5
+  and Fable 5.2 reject a forced tool choice. Hence the shared `CONFIRM_MODELS` list (see
+  `../shared/README.md`, Gotchas); do not work around it here.
 - Running the bare binary (`.build/debug/NoseyFactChecker`) without `--test-confirm` starts a second
   Nosey: it has no bundle identifier, so the single-instance check does not see the installed copy. It
   then crashes in `UNUserNotificationCenter` ("bundleProxyForCurrentProcess is nil") before watching

@@ -26,7 +26,10 @@ enum ConfirmSelfTest {
             return text.split(separator: "\n").map(String.init)
         }
 
-        let model = "stub-model", system = "stub system"
+        // No request is made; the name matters because llm_contact.py only plans a question for the models
+        // in its CONFIRM_MODELS list, and this one is on it.
+        var model = "claude-haiku-4-5"
+        let system = "stub system"
         let messages: [[String: Any]] = [["role": "user", "content": "SELF-TEST question"]]
         let tools: [[String: Any]] = [(try? LLMContact.contactTool()) ?? ["name": "contact_eli"]]
         let plain: [String: Any] = ["content": [["type": "text", "text": "{\"findings\":[]}"]], "stop_reason": "end_turn"]
@@ -94,9 +97,17 @@ enum ConfirmSelfTest {
         calls = 0
         r = await check(["content": [["type": "text", "text": "@ELI: SELF-TEST marker line"]]]) { _, _ in calls += 1; throw Stubbed() }
         expect(r.contact != nil && calls == 0 && lines("messages.jsonl").count == 5, "@ELI: line: sent, never questioned")
+
+        // 8. A model the confirm step is not validated for: its contact_eli call is sent without a question.
+        model = "claude-haiku-5-5"
+        calls = 0
+        r = await check(toolCall) { _, _ in calls += 1; return decision("task_remark_keep_working") }
+        expect(r.contact?.message.contains("nothing to check") == true && r.kept == nil && calls == 0
+                && lines("messages.jsonl").count == 6, "model not on the shared list: sent, no question asked")
+        model = "claude-haiku-4-5"
         expect(lines("unconfirmed.jsonl").count == 1, "unconfirmed.jsonl still has just the one note")
 
-        // 8. The question's request drops what the API rejects with a forced tool choice.
+        // 9. The question's request drops what the API rejects with a forced tool choice.
         let body: [String: Any] = ["model": model, "system": system, "max_tokens": 4096, "stream": true,
                                    "thinking": ["type": "adaptive"], "tools": tools, "messages": messages,
                                    "output_config": ["effort": "low", "format": ["type": "json_schema"]]]

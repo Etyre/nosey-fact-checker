@@ -147,14 +147,49 @@ final class AnthropicClient {
     }
 
     /// Runs the shared inbox check on one API response and, if the model contacted Eli, throws so the
-    /// caller stops the task. `body` is the request that produced the response.
-    private static func checkContact(body: [String: Any], response: [String: Any]) async throws {
+    /// caller stops the task. `body` is the request that produced the response. A `contact_eli` call first
+    /// goes through the confirm step (LLMContact.confirmedCheck); `send(body, decision)` makes the extra
+    /// requests it needs, `decision` being true for the one forced-choice question. Returns the response to
+    /// carry on with and, only when the model said its call was a task remark and answered again, the longer
+    /// message list that reply belongs to.
+    private static func checkContact(body: [String: Any], response: [String: Any],
+                                     send: (_ body: [String: Any], _ decision: Bool) async throws -> [String: Any])
+        async throws -> (response: [String: Any], kept: [[String: Any]]?) {
         let system = (body["system"] as? [[String: Any]]).map(systemText) ?? (body["system"] as? String ?? "")
-        if let c = await LLMContact.check(model: body["model"] as? String ?? "", system: system,
-                                          messages: body["messages"] as? [[String: Any]] ?? [],
-                                          response: response, tools: body["tools"] as? [[String: Any]] ?? []) {
-            throw APIError.contactedEli(c.message)
+        let result = await LLMContact.confirmedCheck(
+            model: body["model"] as? String ?? "", system: system,
+            messages: body["messages"] as? [[String: Any]] ?? [], response: response,
+            tools: body["tools"] as? [[String: Any]] ?? []) { messages, decision in
+                if let decision { return try await send(decisionBody(from: body, messages: messages, decision: decision), true) }
+                var again = body
+                again["messages"] = messages
+                return try await send(again, false)
+            }
+        if let c = result.contact { throw APIError.contactedEli(c.message) }
+        return (result.kept?.response ?? response, result.kept?.messages)
+    }
+
+    /// The request for the confirm step's question: same model and system prompt, with the tools, forced tool
+    /// choice and token limit that `llm_contact.py confirm` supplied. Thinking has to go because the API
+    /// rejects it together with a forced tool choice, and the JSON output format because the answer is a tool
+    /// call; it is not streamed.
+    static func decisionBody(from body: [String: Any], messages: [[String: Any]], decision: [String: Any]) -> [String: Any] {
+        var b = body
+        b["messages"] = messages
+        for key in ["tools", "tool_choice", "max_tokens"] { b[key] = decision[key] }
+        for key in ["thinking", "output_config", "stream"] { b[key] = nil }
+        return b
+    }
+
+    /// One non-streamed request, returning the response JSON.
+    private func post(_ body: [String: Any]) async throws -> [String: Any] {
+        let (data, resp) = try await session.data(for: try request(body: body))
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200 else { throw APIError.http(code, AnthropicClient.errorMessage(data)) }
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw APIError.badResponse("not a JSON object")
         }
+        return json
     }
 
     static func imageBlock(_ jpeg: Data) -> [String: Any] {
@@ -204,18 +239,21 @@ final class AnthropicClient {
         let userMessage: [String: Any] = ["role": "user", "content": content]
 
         var usage = APIUsage()
+        var history = [userMessage]
         var blocks: [[String: Any]] = []
-        for attempt in 0...AnthropicClient.maxContinuations {
-            body["messages"] = blocks.isEmpty ? [userMessage] : [userMessage, ["role": "assistant", "content": blocks]]
-            let req = try request(body: body)
-            let (data, resp) = try await session.data(for: req)
-            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            guard code == 200 else { throw APIError.http(code, AnthropicClient.errorMessage(data)) }
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                throw APIError.badResponse("not a JSON object")
-            }
+        // Every request of this check is counted, the confirm step's included.
+        func send(_ body: [String: Any]) async throws -> [String: Any] {
+            let json = try await post(body)
             usage.add(APIUsage(json: json["usage"] as? [String: Any]))
-            try await AnthropicClient.checkContact(body: body, response: json)
+            return json
+        }
+        for attempt in 0...AnthropicClient.maxContinuations {
+            body["messages"] = blocks.isEmpty ? history : history + [["role": "assistant", "content": blocks]]
+            let (json, kept) = try await AnthropicClient.checkContact(body: body, response: try await send(body)) { b, _ in
+                try await send(b)
+            }
+            // The model said its contact_eli call was a task remark: the answer is its new reply to the longer exchange.
+            if let kept { history = kept; blocks = [] }
             let stopReason = json["stop_reason"] as? String ?? ""
             blocks += json["content"] as? [[String: Any]] ?? []
             if stopReason == "tool_use" {
@@ -271,11 +309,28 @@ final class AnthropicClient {
         var current: [[String: Any]] = []   // blocks of the assistant message being built
         for attempt in 0...AnthropicClient.maxContinuations {
             body["messages"] = messages + reply.transcript + (current.isEmpty ? [] : [["role": "assistant", "content": current]])
-            let (stop, blocks) = try await streamOnce(body: body, reply: &reply, onText: onText, onActivity: onActivity)
-            current += blocks
+            var (stop, blocks) = try await streamOnce(body: body, reply: &reply, onText: onText, onActivity: onActivity)
             // The inbox check comes before any tool handling: a contact_eli call ends the turn here, and the
             // text so far stays on screen (ChatSession keeps it).
-            try await AnthropicClient.checkContact(body: body, response: ["content": blocks, "stop_reason": stop])
+            let (response, kept) = try await AnthropicClient.checkContact(
+                body: body, response: ["content": blocks, "stop_reason": stop]) { b, decision in
+                    if decision {
+                        let json = try await self.post(b)
+                        reply.usage.add(APIUsage(json: json["usage"] as? [String: Any]))
+                        return json
+                    }
+                    let (stop, blocks) = try await self.streamOnce(body: b, reply: &reply, onText: onText, onActivity: onActivity)
+                    return ["content": blocks, "stop_reason": stop]
+                }
+            if let kept {
+                // The model said its contact_eli call was a task remark and went on. That call and the reply
+                // it was given are part of the turn now, and the new reply is what the rest of the loop handles.
+                reply.transcript = Array(kept.dropFirst(messages.count))
+                current = []
+                stop = response["stop_reason"] as? String ?? ""
+                blocks = response["content"] as? [[String: Any]] ?? []
+            }
+            current += blocks
             if stop == "pause_turn" {
                 if attempt == AnthropicClient.maxContinuations { throw APIError.badResponse("turn paused too many times") }
                 log.notice("chat turn paused after a search; resuming")
@@ -454,12 +509,10 @@ final class AnthropicClient {
             "tools": [try LLMContact.contactTool()],
             "messages": [["role": "user", "content": "Reply with the single word OK."]],
         ]
-        let (data, resp) = try await session.data(for: try request(body: body))
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard code == 200 else { throw APIError.http(code, AnthropicClient.errorMessage(data)) }
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        try await AnthropicClient.checkContact(body: body, response: json ?? [:])
-        let blocks = json?["content"] as? [[String: Any]] ?? []
+        let (json, _) = try await AnthropicClient.checkContact(body: body, response: try await post(body)) { b, _ in
+            try await self.post(b)
+        }
+        let blocks = json["content"] as? [[String: Any]] ?? []
         return blocks.first(where: { ($0["type"] as? String) == "text" })?["text"] as? String ?? "(no text)"
     }
 

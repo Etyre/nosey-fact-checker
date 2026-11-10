@@ -24,8 +24,11 @@ enum FileLog {
     /// Blocks until every queued line is on disk. Call before exiting the process.
     static func flush() { queue.sync {} }
 
+    /// Set by the --test-confirm self-test so its stubbed "model contacted Eli" lines cannot be taken for real ones.
+    static var prefix = ""
+
     static func write(_ message: String) {
-        let line = "\(stamp.string(from: Date())) \(message)\n"
+        let line = "\(stamp.string(from: Date())) \(prefix)\(message)\n"
         queue.async {
             let fm = FileManager.default
             try? fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

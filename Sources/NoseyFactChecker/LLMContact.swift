@@ -5,7 +5,8 @@ private let log = Logger(subsystem: "com.elityre.nosey", category: "llm-contact"
 
 /// The shared LLM inbox (~/Documents/agent-coding/shared, see its README). Every system prompt Nosey sends
 /// starts with the shared preamble, every request offers the `contact_eli` tool, and every response is run
-/// through `llm_contact.py check`, which records a message to Eli and notifies him. When it does, the task
+/// through `llm_contact.py check`, which records a message to Eli and notifies him (a `contact_eli` call
+/// first goes through the confirm step, `confirmedCheck`). When it does, the task
 /// that produced the response stops: a background check pauses watching, a chat is closed to further turns.
 /// The preamble and tool definition are read from disk on every request so edits there apply at once.
 enum LLMContact {
@@ -24,8 +25,10 @@ enum LLMContact {
 
     enum Failure: LocalizedError {
         case missing(URL)
+        case badPlan
         var errorDescription: String? {
             switch self {
+            case .badPlan: return "llm_contact.py confirm returned an unexpected shape"
             case .missing(let url): return "Shared LLM inbox file is missing or unreadable: \(url.path)"
             }
         }
@@ -66,7 +69,73 @@ enum LLMContact {
             fail("could not encode the check payload")
             return nil
         }
-        return await Task.detached(priority: .utility) { run(payload: data) }.value
+        return await Task.detached(priority: .utility) { runCheck(payload: data) }.value
+    }
+
+    /// The confirm step followed by `check` (shared README, "Confirm step in any other language"). Small models
+    /// use `contact_eli` for routine remarks about the task, so a call to it is followed by one forced-choice
+    /// question before anything is sent. `call(messages, decision)` makes the app's model call on a longer
+    /// message list: with `decision` nil exactly as the original call, otherwise as the question (see
+    /// `AnthropicClient.decisionBody`). Sending is the default: only an explicit "keep working" answer continues
+    /// the task, and any error or unexpected shape here ends in `check` on the original response, so a broken
+    /// confirm step cannot lose a message. `kept` is set when the model kept working: the continued messages and
+    /// its new reply, which the caller carries on with (unless `contact` is set, when the new reply contacted Eli).
+    static func confirmedCheck(model: String, system: String, messages: [[String: Any]], response: [String: Any],
+                               tools: [[String: Any]],
+                               call: (_ messages: [[String: Any]], _ decision: [String: Any]?) async throws -> [String: Any])
+        async -> (contact: Contact?, kept: (messages: [[String: Any]], response: [String: Any])?) {
+        // nil for a response without a contact_eli call, an "@ELI:" line included: that is never questioned.
+        if let plan = await confirmPlan(response: response, tools: tools) {
+            do {
+                guard let ask = plan["ask"] as? [[String: Any]], let keep = plan["keep"] as? [[String: Any]],
+                      let decision = plan["decision"] as? [String: Any],
+                      let toolName = plan["decision_tool_name"] as? String,
+                      let keepValue = plan["keep_value"] as? String, !keepValue.isEmpty else {
+                    throw Failure.badPlan
+                }
+                let answer = try await call(messages + ask, decision)
+                let choice = (answer["content"] as? [[String: Any]] ?? [])
+                    .first { ($0["type"] as? String) == "tool_use" && ($0["name"] as? String) == toolName }
+                if (choice?["input"] as? [String: Any])?["meant"] as? String == keepValue {
+                    let continued = messages + keep
+                    let second = try await call(continued, nil)
+                    let contact = await check(model: model, system: system, messages: continued, response: second,
+                                              tools: tools)
+                    if contact == nil {
+                        // Nothing is discarded: what the model said the first time goes to unconfirmed.jsonl.
+                        await noteUnconfirmed(model: model, response: response)
+                        FileLog.write("contact_eli call was a task remark (model's choice); not sent, task continues")
+                    }
+                    return (contact, (continued, second))
+                }
+            } catch {
+                fail("confirm step failed, sending the original message: \(error.localizedDescription)")
+            }
+        }
+        return (await check(model: model, system: system, messages: messages, response: response, tools: tools), nil)
+    }
+
+    /// `llm_contact.py confirm`: nil when the response has no `contact_eli` call (or the script could not say),
+    /// else the messages and request arguments for the question.
+    private static func confirmPlan(response: [String: Any], tools: [[String: Any]]) async -> [String: Any]? {
+        guard let data = try? JSONSerialization.data(withJSONObject: ["response": response, "tools": tools]) else { return nil }
+        return await Task.detached(priority: .utility) { () -> [String: Any]? in
+            guard let (status, out) = run("confirm", payload: data) else { return nil }
+            guard status == 0 else { fail("llm_contact.py confirm exited \(status): \(out.suffix(500))"); return nil }
+            let line = out.split(separator: "\n").last.map(String.init) ?? ""
+            return (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]   // "null" gives nil
+        }.value
+    }
+
+    /// `llm_contact.py unconfirmed`: keeps the text of a `contact_eli` call the model chose not to send.
+    private static func noteUnconfirmed(model: String, response: [String: Any]) async {
+        let payload: [String: Any] = ["app": app, "model": model, "response": response]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
+        await Task.detached(priority: .utility) {
+            if let (status, out) = run("unconfirmed", payload: data), status != 0 {
+                fail("llm_contact.py unconfirmed exited \(status): \(out.suffix(500))")
+            }
+        }.value
     }
 
     /// The first interpreter that exists. The system python3 (3.9) is too old for llm_contact.py, so it is
@@ -79,12 +148,14 @@ enum LLMContact {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }.map { URL(fileURLWithPath: $0) }
     }
 
-    private static func run(payload: Data) -> Contact? {
+    /// Runs one `llm_contact.py` command with the payload on stdin. Returns its exit status and output, or nil
+    /// (logged) when it could not be started.
+    private static func run(_ command: String, payload: Data) -> (status: Int32, out: String)? {
         guard let python else { fail("no python3 found for llm_contact.py"); return nil }
         guard FileManager.default.isReadableFile(atPath: scriptURL.path) else { fail("missing \(scriptURL.path)"); return nil }
         let proc = Process()
         proc.executableURL = python
-        proc.arguments = [scriptURL.path, "check"]
+        proc.arguments = [scriptURL.path, command]
         proc.currentDirectoryURL = sharedDir
         let stdin = Pipe(), output = Pipe()
         proc.standardInput = stdin
@@ -104,7 +175,12 @@ enum LLMContact {
         DispatchQueue.global().asyncAfter(deadline: .now() + 180) { if proc.isRunning { proc.terminate() } }
         let out = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         proc.waitUntilExit()
-        switch proc.terminationStatus {
+        return (proc.terminationStatus, out)
+    }
+
+    private static func runCheck(payload: Data) -> Contact? {
+        guard let (status, out) = run("check", payload: payload) else { return nil }
+        switch status {
         case 0:
             return nil
         case 3:
@@ -116,7 +192,7 @@ enum LLMContact {
             log.notice("model contacted Eli, inbox record \(contact.id, privacy: .public)")
             return contact
         default:
-            fail("llm_contact.py check exited \(proc.terminationStatus): \(out.suffix(500))")
+            fail("llm_contact.py check exited \(status): \(out.suffix(500))")
             return nil
         }
     }

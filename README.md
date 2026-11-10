@@ -59,6 +59,18 @@ silent otherwise. Swift (SwiftUI + AppKit), no third-party dependencies.
    it with `llm-inbox`. A missing preamble or tool file fails the request with a clear error
    rather than sending a prompt without the preamble; a failure to run the Python check is
    logged and does not stop Nosey.
+8. **Confirm step** (added 2026-11-10, the protocol in `../shared/README.md`, "Confirm step in any
+   other language"). Haiku uses `contact_eli` for routine remarks, most of all on the JSON-only
+   fact check where the tool is the only place prose can go, and each one paused watching. So a
+   response with a `contact_eli` call is not sent straight away: `llm_contact.py confirm` supplies
+   one forced-choice question, which Nosey asks with the same model and system prompt (not
+   streamed, no thinking, no JSON output format). Only an explicit "task remark, keep working"
+   answer continues: Nosey makes its normal call again on the longer exchange, runs `check` on
+   that reply, and if it is clean passes the first reply to `llm_contact.py unconfirmed`, which
+   keeps its text in `LLMInbox/unconfirmed.jsonl`. "Send", no clear answer, or any error at any
+   point runs `check` on the original response, exactly as in step 7. An `@ELI:` line is never
+   questioned. In a chat the text already on screen stays and the new reply continues after it;
+   the call and its answer stay in the transcript for later turns.
 
 ### Menu bar
 
@@ -122,12 +134,13 @@ another Nosey is already running, and re-registers Launch at Login from the inst
 
 | File | Purpose |
 |---|---|
-| `Sources/NoseyFactChecker/main.swift` | Entry point; header comment with the runtime locations |
+| `Sources/NoseyFactChecker/main.swift` | Entry point; header comment with the runtime locations; handles `--test-confirm` |
 | `Sources/NoseyFactChecker/AppDelegate.swift` | Menu bar item and menu, hotkeys, single-instance check, Launch at Login |
 | `Sources/NoseyFactChecker/FactCheckEngine.swift` | The capture → change-detect → fact-check → notify loop; `FileLog` |
 | `Sources/NoseyFactChecker/ScreenCapturer.swift` | ScreenCaptureKit capture of every display, privacy boxes, 64×64 change signatures |
 | `Sources/NoseyFactChecker/AnthropicClient.swift` | Raw-HTTP client for the Messages API: structured-output checks, streamed chat, `capture_screen` tool, inbox check after every response |
-| `Sources/NoseyFactChecker/LLMContact.swift` | Shared LLM inbox: reads the preamble and `contact_eli` tool, runs `llm_contact.py check` via `Process` |
+| `Sources/NoseyFactChecker/LLMContact.swift` | Shared LLM inbox: reads the preamble and `contact_eli` tool, runs `llm_contact.py` (`confirm`, `check`, `unconfirmed`) via `Process`; the confirm step (`confirmedCheck`) |
+| `Sources/NoseyFactChecker/ConfirmSelfTest.swift` | `--test-confirm`: offline check of the confirm step with stubbed model replies and a throwaway inbox |
 | `Sources/NoseyFactChecker/ChatSession.swift` | One conversation and its API transcript; `ChatController` owns sessions and the saved draft |
 | `Sources/NoseyFactChecker/ChatWindow.swift` | Floating chat window (SwiftUI): finding card, bubbles, input bar |
 | `Sources/NoseyFactChecker/SettingsWindow.swift` | Settings window: API, watching, privacy, misfires, web search, hotkeys, prompts |
@@ -149,7 +162,7 @@ another Nosey is already running, and re-registers Launch at Login from the inst
 - Data: `~/Library/Application Support/Nosey/` – `captures/` (screenshots, pruned after the retention period), `findings.json`, `misfires.json`, `api-key` (0600).
 - Settings, usage counters and unsent drafts: UserDefaults, domain `com.elityre.nosey` (`defaults read com.elityre.nosey`).
 - Log: `~/Library/Logs/nosey.log`, one timestamped line per check, hotkey press, inbox event or failure; rotated to `nosey.old.log` at 2 MB. Builds before 2026-11-07 wrote `~/Library/Application Support/Nosey/nosey.log`. Also os_log, subsystem `com.elityre.nosey` (Console.app).
-- Shared LLM inbox: `~/Documents/agent-coding/shared/` (preamble, tool, `llm_contact.py`, its `.venv`); messages land in `~/Library/Application Support/LLMInbox/messages.jsonl`, log in `~/Library/Logs/llm-inbox.log`.
+- Shared LLM inbox: `~/Documents/agent-coding/shared/` (preamble, tool, `llm_contact.py`, its `.venv`); messages land in `~/Library/Application Support/LLMInbox/messages.jsonl` (calls the model took back in `unconfirmed.jsonl`), log in `~/Library/Logs/llm-inbox.log`.
 
 ## Common tasks
 
@@ -173,6 +186,9 @@ log stream --predicate 'subsystem == "com.elityre.nosey"' --level info
 #   Menu › Send a Test Notification      a fake finding through the notification path (click it to open the chat)
 #   Menu › Check Screen Now              one full capture → API → notify cycle right now
 #   Settings › Anthropic API › Test      pings the check model with the key (and the shared preamble + tool)
+# Confirm step, offline: stubbed model replies, real llm_contact.py, a temp inbox (LLM_INBOX_DIR), nothing
+# sent to Eli. Prints ok/FAIL per case and exits 0 on PASS. Always pass the flag: see Gotchas.
+swift build && .build/debug/NoseyFactChecker --test-confirm
 llm-inbox test                           # fake contact through the shared inbox (file, ntfy, email, Mac alert)
 llm-inbox list                           # messages the model has sent, from Nosey or any other app
 ```
@@ -247,3 +263,13 @@ macOS will ask for Screen Recording again after each rebuild.
 - The shared `llm_contact.py` uses `dict | None` annotations, which the system Python 3.9 cannot
   parse. Nosey picks `shared/.venv/bin/python3` or Homebrew's `python3` first; a GUI app's PATH is
   minimal, so `env python3` would have found the wrong one.
+- The confirm step's question forces a tool choice, which the API rejects together with thinking, so
+  that one request drops `thinking` and the whole `output_config` (effort and JSON format). The model's
+  own turn, thinking block included, goes back unchanged and the API accepts that with thinking off
+  (checked live against `claude-haiku-5-5`, 2026-11-10).
+- Running the bare binary (`.build/debug/NoseyFactChecker`) without `--test-confirm` starts a second
+  Nosey: it has no bundle identifier, so the single-instance check does not see the installed copy. It
+  then crashes in `UNUserNotificationCenter` ("bundleProxyForCurrentProcess is nil") before watching
+  starts, leaving an `engine init` line in the log.
+- `--test-confirm` writes to the real `nosey.log`; its lines carry the prefix
+  `[--test-confirm, stubbed]` so a stubbed "model contacted Eli" is not taken for a real one.

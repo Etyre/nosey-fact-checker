@@ -63,7 +63,7 @@ final class AppSettings: ObservableObject {
     private init() {
         checkModel = d.string(forKey: "checkModel") ?? "claude-haiku-5-5"
         // Before the split there was one "model" setting; a custom value carries over to chat.
-        chatModel = d.string(forKey: "chatModel") ?? d.string(forKey: "model") ?? "claude-sonnet-5"
+        chatModel = d.string(forKey: "chatModel") ?? d.string(forKey: "model") ?? "claude-sonnet-5-5"
         workspaceID = d.string(forKey: "workspaceID") ?? ""
         effort = d.string(forKey: "effort") ?? "low"
         intervalSeconds = d.object(forKey: "intervalSeconds") as? Double ?? 5

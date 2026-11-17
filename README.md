@@ -62,7 +62,7 @@ silent otherwise. Swift (SwiftUI + AppKit), no third-party dependencies.
 8. **Confirm step** (added 2026-11-10, the protocol in `../shared/README.md`, "Confirm step in any
    other language"). **Inactive with Nosey's default models**: the step runs only for models in
    the shared `CONFIRM_MODELS` list in `llm_contact.py`, today just `claude-haiku-4-5`. Checks
-   and the Settings Test ping default to `claude-haiku-5-5` and chat to `claude-sonnet-5`, neither
+   and the Settings Test ping default to `claude-haiku-5-5` and chat to `claude-sonnet-5-5`, neither
    on the list, so their `contact_eli` calls are sent straight away as in step 7. The step takes
    effect only if a listed model is set in Settings, or the shared list grows; Nosey sends the
    model name to `llm_contact.py confirm` and the script decides. The reason for the step: Haiku
@@ -114,7 +114,7 @@ Everything lives in Settings:
   Set the per-check cap to 0 to keep search for chat only.
 - **Models and effort**: background checks and chat each have their own model. Checks default
   to `claude-haiku-5-5` (they run every few seconds, and Haiku is about 20× cheaper than Sonnet
-  per token); chat defaults to `claude-sonnet-5`. Any current Claude model ID works in either.
+  per token); chat defaults to `claude-sonnet-5-5` (since 2026-11-16; same price as Sonnet 5). Any current Claude model ID works in either.
   Effort `low` is the default for background checks; chat uses at least `medium`.
 - **Hotkeys**: text like `ctrl+cmd+j`, `shift+cmd+space`, `ctrl+alt+f9`. The dismiss hotkey (default `ctrl+cmd+k`) clears the top Nosey notification, one per press; the chat hotkey opens the top one; set the alert style to Alerts in System Settings if you want them to stay until dismissed.
 
@@ -124,7 +124,7 @@ A single 1568×882 screenshot is about 1,850 input tokens, and a whole check wit
 is about 2,900 uncached input tokens. A check that flags nothing returns `{"findings":[]}`,
 about 10 output tokens, so input is nearly the whole cost. With Haiku 5.5 at $0.10 per million
 input tokens that is roughly $0.0003 per check, or about $0.20 if the screen changed on every
-5-second tick for an hour; on Sonnet 5 ($2 per million) the same hour would be about $4. In
+5-second tick for an hour; on Sonnet 5.5 ($2 per million) the same hour would be about $4. In
 practice change detection skips most ticks while you read or think. Two displays roughly
 double it. The menu shows a running estimate for today, priced per model; the Anthropic
 Console has the real figure. Pause for 1 Hour is there for meetings and video.

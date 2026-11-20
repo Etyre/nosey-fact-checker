@@ -119,6 +119,10 @@ enum LLMContact {
                 if (choice?["input"] as? [String: Any])?["meant"] as? String == keepValue {
                     let continued = messages + keep
                     kept = (continued, try await call(continued, nil))
+                    // A note that rode along with the contact_eli call is still a note, and `check` below only
+                    // sees the new reply. Recorded once the task has gone on: had the call above failed, `check`
+                    // on the original response would record it instead.
+                    await recordNotes(model: model, system: system, messages: messages, response: response, tools: tools)
                 }
             } catch {
                 fail("confirm step failed, sending the original message: \(error.localizedDescription)")
@@ -163,6 +167,26 @@ enum LLMContact {
                 fail("llm_contact.py unconfirmed exited \(status): \(out.suffix(500))")
             }
         }.value
+    }
+
+    /// `llm_contact.py report` with `"halts": false` for every `note_to_eli` call in a response: recorded and
+    /// notified as a note. Only for a response that `check` will never be run on.
+    private static func recordNotes(model: String, system: String, messages: [[String: Any]], response: [String: Any],
+                                    tools: [[String: Any]]) async {
+        let calls = (response["content"] as? [[String: Any]] ?? [])
+            .filter { ($0["type"] as? String) == "tool_use" && ($0["name"] as? String) == noteToolName }
+        for use in calls {
+            let payload: [String: Any] = ["app": app, "model": model, "system": system, "messages": messages,
+                                          "response": response, "tools": tools, "halts": false,
+                                          "message": (use["input"] as? [String: Any])?["message"] as? String ?? ""]
+            guard let data = try? JSONSerialization.data(withJSONObject: payload) else { continue }
+            await Task.detached(priority: .utility) {
+                if let (status, out) = run("report", payload: data), status != 0 {
+                    fail("llm_contact.py report (note) exited \(status): \(out.suffix(500))")
+                }
+            }.value
+            FileLog.write("model left Eli a note next to a contact_eli call it took back (recorded in the inbox, task continues)")
+        }
     }
 
     /// The first interpreter that exists. The system python3 (3.9) is too old for llm_contact.py, so it is

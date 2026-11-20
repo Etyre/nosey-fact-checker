@@ -88,7 +88,8 @@ silent otherwise. Swift (SwiftUI + AppKit), no third-party dependencies.
    request fails the check fails like any failed request. The chat has its own tool loop, so
    there the acknowledgement text goes back as the tool result for `note_to_eli`, next to any
    screenshot result, and the reply continues. A reply with both a note and a `contact_eli`
-   call records both and stops. The log line is "model left Eli a note".
+   call records both and stops; if a confirm-step model takes that `contact_eli` call back, the
+   note is still recorded (`llm_contact.py report` with `"halts": false`). The log line is "model left Eli a note".
 
 ### Menu bar
 

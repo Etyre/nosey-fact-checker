@@ -184,7 +184,13 @@ enum ConfirmSelfTest {
         model = "claude-haiku-4-5"
         expect(lines("unconfirmed.jsonl").count == 1, "notes never go to unconfirmed.jsonl")
 
-        // 16. The question's request drops what the API rejects with a forced tool choice.
+        // 16. On a confirm-step model: a note beside a contact_eli call the model then takes back is still recorded.
+        r = await check(both) { _, d in d != nil ? decision("task_remark_keep_working") : plain }
+        expect(r.contact == nil && r.kept != nil && records().count == n + 2 && isNote(records().last, "SELF-TEST note three")
+                && lines("unconfirmed.jsonl").count == 2,
+               "note + contact_eli taken back: note recorded once, call kept in unconfirmed.jsonl, no stop")
+
+        // 17. The question's request drops what the API rejects with a forced tool choice.
         let body: [String: Any] = ["model": model, "system": system, "max_tokens": 4096, "stream": true,
                                    "thinking": ["type": "adaptive"], "tools": tools, "messages": messages,
                                    "output_config": ["effort": "low", "format": ["type": "json_schema"]]]

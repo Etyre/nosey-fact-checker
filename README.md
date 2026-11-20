@@ -49,7 +49,8 @@ silent otherwise. Swift (SwiftUI + AppKit), no third-party dependencies.
    prompt, for checks, chat and the Settings "Test" ping alike, starts with the text of
    `~/Documents/agent-coding/shared/llm-system-prompt-preamble.md`, read from disk on each
    request, followed by Nosey's own prompt. Every request also offers the `contact_eli` tool
-   from `shared/contact_eli_tool.json`. After every response Nosey pipes
+   from `shared/contact_eli_tool.json` and the `note_to_eli` tool from
+   `shared/note_to_eli_tool.json` (step 9). After every response Nosey pipes
    `{app, model, system, messages, response, tools}` to
    `python3 shared/llm_contact.py check` (`LLMContact.swift`). Exit 3 means the model called
    `contact_eli` or wrote an `@ELI:` line: the inbox has recorded the full context and notified
@@ -77,6 +78,17 @@ silent otherwise. Swift (SwiftUI + AppKit), no third-party dependencies.
    point runs `check` on the original response, exactly as in step 7. An `@ELI:` line is never
    questioned. In a chat the text already on screen stays and the new reply continues after it;
    the call and its answer stay in the transcript for later turns.
+9. **Notes** (added 2026-11-20, `../shared/README.md`, "Two tools"). `note_to_eli` leaves Eli a
+   message and the task carries on. The same `llm_contact.py check` records the note in the
+   inbox (`via: note`, `halts: false`), exits 0 and prints the two turns that answer the call;
+   Nosey never records it a second time, never treats it as the answer, and never pauses
+   watching or closes a chat for it. A fact check or the Test ping (one request, no tool loop)
+   appends those turns and asks the model again for its answer, at most 3 times in a row, and
+   each new reply goes through the confirm step and `check` like the first; if that follow-up
+   request fails the check fails like any failed request. The chat has its own tool loop, so
+   there the acknowledgement text goes back as the tool result for `note_to_eli`, next to any
+   screenshot result, and the reply continues. A reply with both a note and a `contact_eli`
+   call records both and stops. The log line is "model left Eli a note".
 
 ### Menu bar
 
@@ -144,9 +156,9 @@ another Nosey is already running, and re-registers Launch at Login from the inst
 | `Sources/NoseyFactChecker/AppDelegate.swift` | Menu bar item and menu, hotkeys, single-instance check, Launch at Login |
 | `Sources/NoseyFactChecker/FactCheckEngine.swift` | The capture → change-detect → fact-check → notify loop; `FileLog` |
 | `Sources/NoseyFactChecker/ScreenCapturer.swift` | ScreenCaptureKit capture of every display, privacy boxes, 64×64 change signatures |
-| `Sources/NoseyFactChecker/AnthropicClient.swift` | Raw-HTTP client for the Messages API: structured-output checks, streamed chat, `capture_screen` tool, inbox check after every response |
-| `Sources/NoseyFactChecker/LLMContact.swift` | Shared LLM inbox: reads the preamble and `contact_eli` tool, runs `llm_contact.py` (`confirm`, `check`, `unconfirmed`) via `Process`; the confirm step (`confirmedCheck`) |
-| `Sources/NoseyFactChecker/ConfirmSelfTest.swift` | `--test-confirm`: offline check of the confirm step with stubbed model replies and a throwaway inbox |
+| `Sources/NoseyFactChecker/AnthropicClient.swift` | Raw-HTTP client for the Messages API: structured-output checks, streamed chat, `capture_screen` tool, inbox check after every response, `note_to_eli` answered in the chat's tool loop |
+| `Sources/NoseyFactChecker/LLMContact.swift` | Shared LLM inbox: reads the preamble and the `contact_eli` and `note_to_eli` tools, runs `llm_contact.py` (`confirm`, `check`, `unconfirmed`) via `Process`; the confirm step and the note follow-up (`confirmedCheck`) |
+| `Sources/NoseyFactChecker/ConfirmSelfTest.swift` | `--test-confirm`: offline check of the confirm step and of `note_to_eli` handling with stubbed model replies and a throwaway inbox |
 | `Sources/NoseyFactChecker/ChatSession.swift` | One conversation and its API transcript; `ChatController` owns sessions and the saved draft |
 | `Sources/NoseyFactChecker/ChatWindow.swift` | Floating chat window (SwiftUI): finding card, bubbles, input bar |
 | `Sources/NoseyFactChecker/SettingsWindow.swift` | Settings window: API, watching, privacy, misfires, web search, hotkeys, prompts |
@@ -192,8 +204,9 @@ log stream --predicate 'subsystem == "com.elityre.nosey"' --level info
 #   Menu › Send a Test Notification      a fake finding through the notification path (click it to open the chat)
 #   Menu › Check Screen Now              one full capture → API → notify cycle right now
 #   Settings › Anthropic API › Test      pings the check model with the key (and the shared preamble + tool)
-# Confirm step, offline: stubbed model replies, real llm_contact.py, a temp inbox (LLM_INBOX_DIR), nothing
-# sent to Eli. Prints ok/FAIL per case and exits 0 on PASS. Always pass the flag: see Gotchas.
+# Confirm step and notes, offline: stubbed model replies, real llm_contact.py, a temp inbox (LLM_INBOX_DIR),
+# nothing sent to Eli. Covers a note-only reply (second call, normal answer, one note recorded, no stop) and
+# contact_eli still stopping. Prints ok/FAIL per case and exits 0 on PASS. Always pass the flag: see Gotchas.
 swift build && .build/debug/NoseyFactChecker --test-confirm
 llm-inbox test                           # fake contact through the shared inbox (file, ntfy, email, Mac alert)
 llm-inbox list                           # messages the model has sent, from Nosey or any other app
@@ -282,5 +295,9 @@ macOS will ask for Screen Recording again after each rebuild.
   Nosey: it has no bundle identifier, so the single-instance check does not see the installed copy. It
   then crashes in `UNUserNotificationCenter` ("bundleProxyForCurrentProcess is nil") before watching
   starts, leaving an `engine init` line in the log.
+- `note_to_eli` has only been run against stubbed replies (`--test-confirm`), never a real model: it was
+  added at night with the API blocked. Not yet seen live: the fact check's JSON output format together with
+  a note call and its follow-up request, and a streamed chat reply that leaves a note. The shared README's
+  Gotchas say what to measure (a real objection must still go to `contact_eli`).
 - `--test-confirm` writes to the real `nosey.log`; its lines carry the prefix
   `[--test-confirm, stubbed]` so a stubbed "model contacted Eli" is not taken for a real one.

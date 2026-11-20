@@ -4,17 +4,23 @@ import os
 private let log = Logger(subsystem: "com.elityre.nosey", category: "llm-contact")
 
 /// The shared LLM inbox (~/Documents/agent-coding/shared, see its README). Every system prompt Nosey sends
-/// starts with the shared preamble, every request offers the `contact_eli` tool, and every response is run
-/// through `llm_contact.py check`, which records a message to Eli and notifies him (a `contact_eli` call
-/// first goes through the confirm step, `confirmedCheck`). When it does, the task
+/// starts with the shared preamble, every request offers the `contact_eli` and `note_to_eli` tools, and every
+/// response is run through `llm_contact.py check`, which records a message to Eli and notifies him (a
+/// `contact_eli` call first goes through the confirm step, `confirmedCheck`). When it does, the task
 /// that produced the response stops: a background check pauses watching, a chat is closed to further turns.
-/// The preamble and tool definition are read from disk on every request so edits there apply at once.
+/// A `note_to_eli` call is recorded by the same check but stops nothing: the call is answered and the task
+/// carries on (`confirmedCheck` asks again; the chat's tool loop answers it like any other tool).
+/// The preamble and tool definitions are read from disk on every request so edits there apply at once.
 enum LLMContact {
     static let app = "nosey"
     static let sharedDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Documents/agent-coding/shared", isDirectory: true)
     static let preambleURL = sharedDir.appendingPathComponent("llm-system-prompt-preamble.md")
     static let toolURL = sharedDir.appendingPathComponent("contact_eli_tool.json")
+    static let noteToolURL = sharedDir.appendingPathComponent("note_to_eli_tool.json")
+    static let noteToolName = "note_to_eli"
+    /// How many times in a row a reply that only leaves notes is answered and asked again (as shared with_notes).
+    static let maxNoteRounds = 3
     static let scriptURL = sharedDir.appendingPathComponent("llm_contact.py")
 
     /// A message the model sent to Eli, as recorded by the inbox.
@@ -48,26 +54,31 @@ enum LLMContact {
         return try preamble() + (own.isEmpty ? "" : "\n\n" + own)
     }
 
-    /// The `contact_eli` tool definition, ready to go in a request's `tools` array.
-    static func contactTool() throws -> [String: Any] {
-        guard let data = try? Data(contentsOf: toolURL),
-              let tool = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              tool["name"] is String else {
-            throw Failure.missing(toolURL)
+    /// The `contact_eli` (stops the task) and `note_to_eli` (task carries on) tool definitions, ready to go
+    /// in a request's `tools` array. Every request that offers one offers both.
+    static func contactTools() throws -> [[String: Any]] {
+        try [toolURL, noteToolURL].map { url in
+            guard let data = try? Data(contentsOf: url),
+                  let tool = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  tool["name"] is String else {
+                throw Failure.missing(url)
+            }
+            return tool
         }
-        return tool
     }
 
-    /// Runs `llm_contact.py check` on one response. Returns the recorded contact when the model called
-    /// `contact_eli` or wrote an `@ELI:` line, else nil. A failure to run the check is logged, not thrown:
-    /// the inbox must not take Nosey down with it.
+    /// Runs `llm_contact.py check` on one response. `contact` is the recorded contact when the model called
+    /// `contact_eli` or wrote an `@ELI:` line, else nil. `noteTurn` is set when the response only left notes
+    /// (`note_to_eli`): the check has recorded them, and these are the two messages that answer the calls (the
+    /// model's own turn, then the tool results). A failure to run the check is logged, not thrown: the inbox
+    /// must not take Nosey down with it.
     static func check(model: String, system: String, messages: [[String: Any]], response: [String: Any],
-                      tools: [[String: Any]]) async -> Contact? {
+                      tools: [[String: Any]]) async -> (contact: Contact?, noteTurn: [[String: Any]]?) {
         let payload: [String: Any] = ["app": app, "model": model, "system": system, "messages": messages,
                                       "response": response, "tools": tools]
         guard let data = try? JSONSerialization.data(withJSONObject: payload) else {
             fail("could not encode the check payload")
-            return nil
+            return (nil, nil)
         }
         return await Task.detached(priority: .utility) { runCheck(payload: data) }.value
     }
@@ -77,13 +88,22 @@ enum LLMContact {
     /// question before anything is sent. `call(messages, decision)` makes the app's model call on a longer
     /// message list: with `decision` nil exactly as the original call, otherwise as the question (see
     /// `AnthropicClient.decisionBody`). Sending is the default: only an explicit "keep working" answer continues
-    /// the task, and any error or unexpected shape here ends in `check` on the original response, so a broken
-    /// confirm step cannot lose a message. `kept` is set when the model kept working: the continued messages and
-    /// its new reply, which the caller carries on with (unless `contact` is set, when the new reply contacted Eli).
+    /// the task, and any error or unexpected shape in the confirm step ends in `check` on the original response,
+    /// so a broken confirm step cannot lose a message. `kept` is set when the task went on past the first
+    /// response: the continued messages and the model's new reply, which the caller carries on with (unless
+    /// `contact` is set, when the new reply contacted Eli).
+    ///
+    /// Notes: a response that only leaves `note_to_eli` notes never stops the task. `check` has recorded them;
+    /// the calls are answered and the model is asked again, up to `noteRounds` times, and each new reply goes
+    /// through this whole function again. If that follow-up request fails the error is thrown like any failed
+    /// request (the note is already recorded). A caller with its own tool loop passes `noteRounds: 0` and
+    /// answers the calls itself from `noteTurn`, which is the answer to the notes in the response it carries
+    /// on with.
     static func confirmedCheck(model: String, system: String, messages: [[String: Any]], response: [String: Any],
-                               tools: [[String: Any]],
+                               tools: [[String: Any]], noteRounds: Int = maxNoteRounds,
                                call: (_ messages: [[String: Any]], _ decision: [String: Any]?) async throws -> [String: Any])
-        async -> (contact: Contact?, kept: (messages: [[String: Any]], response: [String: Any])?) {
+        async throws -> (contact: Contact?, kept: (messages: [[String: Any]], response: [String: Any])?, noteTurn: [[String: Any]]?) {
+        var kept: (messages: [[String: Any]], response: [String: Any])?
         // nil for a response without a contact_eli call, an "@ELI:" line included: that is never questioned.
         if let plan = await confirmPlan(model: model, response: response, tools: tools) {
             do {
@@ -98,21 +118,27 @@ enum LLMContact {
                     .first { ($0["type"] as? String) == "tool_use" && ($0["name"] as? String) == toolName }
                 if (choice?["input"] as? [String: Any])?["meant"] as? String == keepValue {
                     let continued = messages + keep
-                    let second = try await call(continued, nil)
-                    let contact = await check(model: model, system: system, messages: continued, response: second,
-                                              tools: tools)
-                    if contact == nil {
-                        // Nothing is discarded: what the model said the first time goes to unconfirmed.jsonl.
-                        await noteUnconfirmed(model: model, response: response)
-                        FileLog.write("contact_eli call was a task remark (model's choice); not sent, task continues")
-                    }
-                    return (contact, (continued, second))
+                    kept = (continued, try await call(continued, nil))
                 }
             } catch {
                 fail("confirm step failed, sending the original message: \(error.localizedDescription)")
             }
         }
-        return (await check(model: model, system: system, messages: messages, response: response, tools: tools), nil)
+        let checked = await check(model: model, system: system, messages: kept?.messages ?? messages,
+                                  response: kept?.response ?? response, tools: tools)
+        if kept != nil, checked.contact == nil {
+            // Nothing is discarded: what the model said the first time goes to unconfirmed.jsonl.
+            await noteUnconfirmed(model: model, response: response)
+            FileLog.write("contact_eli call was a task remark (model's choice); not sent, task continues")
+        }
+        if checked.contact == nil, let turn = checked.noteTurn, noteRounds > 0 {
+            let longer = (kept?.messages ?? messages) + turn
+            let next = try await call(longer, nil)
+            let r = try await confirmedCheck(model: model, system: system, messages: longer, response: next,
+                                             tools: tools, noteRounds: noteRounds - 1, call: call)
+            return (r.contact, r.kept ?? (longer, next), r.noteTurn)
+        }
+        return (checked.contact, kept, checked.noteTurn)
     }
 
     /// `llm_contact.py confirm`: nil when the response has no `contact_eli` call, the model is not one the shared
@@ -179,22 +205,27 @@ enum LLMContact {
         return (proc.terminationStatus, out)
     }
 
-    private static func runCheck(payload: Data) -> Contact? {
-        guard let (status, out) = run("check", payload: payload) else { return nil }
+    private static func runCheck(payload: Data) -> (contact: Contact?, noteTurn: [[String: Any]]?) {
+        guard let (status, out) = run("check", payload: payload) else { return (nil, nil) }
+        // The last JSON line is the script's answer; anything before it is a warning from the script.
+        let line = out.split(separator: "\n").last { $0.hasPrefix("{") }.map(String.init) ?? ""
+        let rec = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] ?? [:]
         switch status {
         case 0:
-            return nil
+            // Nothing printed: a plain response. {"halts": false, "notes", "continue"}: notes only, recorded.
+            guard let turn = rec["continue"] as? [[String: Any]] else { return (nil, nil) }
+            let notes = (rec["notes"] as? [String] ?? []).joined(separator: " | ")
+            FileLog.write("model left Eli a note (recorded in the inbox, task continues): \(notes.prefix(300))")
+            log.notice("model left Eli a note; task continues")
+            return (nil, turn)
         case 3:
-            // The last JSON line is the record summary; anything before it is a warning from the script.
-            let line = out.split(separator: "\n").last { $0.hasPrefix("{") }.map(String.init) ?? ""
-            let rec = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] ?? [:]
             let contact = Contact(id: rec["id"] as? String ?? "?", message: rec["message"] as? String ?? out)
             FileLog.write("model contacted Eli (inbox \(contact.id)): \(contact.message.prefix(300))")
             log.notice("model contacted Eli, inbox record \(contact.id, privacy: .public)")
-            return contact
+            return (contact, nil)
         default:
             fail("llm_contact.py check exited \(status): \(out.suffix(500))")
-            return nil
+            return (nil, nil)
         }
     }
 

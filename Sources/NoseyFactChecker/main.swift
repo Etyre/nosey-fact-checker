@@ -10,7 +10,7 @@
 //            response is checked by shared/llm_contact.py; see LLMContact.swift.
 import AppKit
 
-// Offline self-test of the contact_eli confirm step; runs instead of the app (see ConfirmSelfTest.swift).
+// Offline self-test of the contact_eli confirm step and note_to_eli handling; runs instead of the app (see ConfirmSelfTest.swift).
 if CommandLine.arguments.contains("--test-confirm") {
     Task.detached {
         let ok = await ConfirmSelfTest.run()

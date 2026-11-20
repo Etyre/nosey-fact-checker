@@ -150,23 +150,27 @@ final class AnthropicClient {
     /// caller stops the task. `body` is the request that produced the response. A `contact_eli` call first
     /// goes through the confirm step (LLMContact.confirmedCheck); `send(body, decision)` makes the extra
     /// requests it needs, `decision` being true for the one forced-choice question. Returns the response to
-    /// carry on with and, only when the model said its call was a task remark and answered again, the longer
-    /// message list that reply belongs to.
-    private static func checkContact(body: [String: Any], response: [String: Any],
+    /// carry on with and, only when the task went on past the first response (the model said its contact_eli
+    /// call was a task remark, or left a note_to_eli note, and answered again), the longer message list that
+    /// reply belongs to. A note never stops anything: the check records it, the call is answered and the model
+    /// is asked again through `send`. A caller with its own tool loop passes `ownToolLoop` and answers the note
+    /// calls itself, with the tool results in `noteTurn`.
+    private static func checkContact(body: [String: Any], response: [String: Any], ownToolLoop: Bool = false,
                                      send: (_ body: [String: Any], _ decision: Bool) async throws -> [String: Any])
-        async throws -> (response: [String: Any], kept: [[String: Any]]?) {
+        async throws -> (response: [String: Any], kept: [[String: Any]]?, noteTurn: [[String: Any]]?) {
         let system = (body["system"] as? [[String: Any]]).map(systemText) ?? (body["system"] as? String ?? "")
-        let result = await LLMContact.confirmedCheck(
+        let result = try await LLMContact.confirmedCheck(
             model: body["model"] as? String ?? "", system: system,
             messages: body["messages"] as? [[String: Any]] ?? [], response: response,
-            tools: body["tools"] as? [[String: Any]] ?? []) { messages, decision in
+            tools: body["tools"] as? [[String: Any]] ?? [],
+            noteRounds: ownToolLoop ? 0 : LLMContact.maxNoteRounds) { messages, decision in
                 if let decision { return try await send(decisionBody(from: body, messages: messages, decision: decision), true) }
                 var again = body
                 again["messages"] = messages
                 return try await send(again, false)
             }
         if let c = result.contact { throw APIError.contactedEli(c.message) }
-        return (result.kept?.response ?? response, result.kept?.messages)
+        return (result.kept?.response ?? response, result.kept?.messages, result.noteTurn)
     }
 
     /// The request for the confirm step's question: same model and system prompt, with the tools, forced tool
@@ -226,7 +230,7 @@ final class AnthropicClient {
     func factCheck(model: String, effort: String, system: String, context: String? = nil, images: [Data],
                    userText: String, maxSearches: Int = 0) async throws -> ([RawFinding], APIUsage) {
         var tools = maxSearches > 0 ? [AnthropicClient.webSearchTool(model: model, maxUses: maxSearches)] : []
-        tools.append(try LLMContact.contactTool())
+        tools += try LLMContact.contactTools()
         var body = AnthropicClient.baseBody(model: model, effort: effort,
                                             system: try AnthropicClient.systemBlocks(prompt: system, context: context,
                                                                                      webSearch: maxSearches > 0),
@@ -249,15 +253,17 @@ final class AnthropicClient {
         }
         for attempt in 0...AnthropicClient.maxContinuations {
             body["messages"] = blocks.isEmpty ? history : history + [["role": "assistant", "content": blocks]]
-            let (json, kept) = try await AnthropicClient.checkContact(body: body, response: try await send(body)) { b, _ in
+            let (json, kept, _) = try await AnthropicClient.checkContact(body: body, response: try await send(body)) { b, _ in
                 try await send(b)
             }
-            // The model said its contact_eli call was a task remark: the answer is its new reply to the longer exchange.
+            // The model said its contact_eli call was a task remark, or left a note that has been answered:
+            // the answer is its new reply to the longer exchange.
             if let kept { history = kept; blocks = [] }
             let stopReason = json["stop_reason"] as? String ?? ""
             blocks += json["content"] as? [[String: Any]] ?? []
             if stopReason == "tool_use" {
-                // The only client tool here is contact_eli, and a call to it was caught just above.
+                // The only client tools here are contact_eli and note_to_eli, and both were handled just above
+                // (a model still leaving notes after the allowed rounds ends up here: an error, not a stop).
                 throw APIError.badResponse("unexpected tool call in a fact check")
             }
             if stopReason == "refusal" {
@@ -298,7 +304,7 @@ final class AnthropicClient {
                     onActivity: @escaping @MainActor (String?) -> Void = { _ in }) async throws -> ChatReply {
         var tools = maxSearches > 0 ? [AnthropicClient.webSearchTool(model: model, maxUses: maxSearches)] : []
         if captureScreen != nil { tools.append(AnthropicClient.captureScreenTool()) }
-        tools.append(try LLMContact.contactTool())
+        tools += try LLMContact.contactTools()
         var body = AnthropicClient.baseBody(model: model, effort: effort,
                                             system: try AnthropicClient.systemBlocks(prompt: system, webSearch: maxSearches > 0,
                                                                                      captureTool: captureScreen != nil),
@@ -311,9 +317,10 @@ final class AnthropicClient {
             body["messages"] = messages + reply.transcript + (current.isEmpty ? [] : [["role": "assistant", "content": current]])
             var (stop, blocks) = try await streamOnce(body: body, reply: &reply, onText: onText, onActivity: onActivity)
             // The inbox check comes before any tool handling: a contact_eli call ends the turn here, and the
-            // text so far stays on screen (ChatSession keeps it).
-            let (response, kept) = try await AnthropicClient.checkContact(
-                body: body, response: ["content": blocks, "stop_reason": stop]) { b, decision in
+            // text so far stays on screen (ChatSession keeps it). A note_to_eli call is recorded by the check
+            // and answered in the tool loop below, like a screenshot call.
+            let (response, kept, noteTurn) = try await AnthropicClient.checkContact(
+                body: body, response: ["content": blocks, "stop_reason": stop], ownToolLoop: true) { b, decision in
                     if decision {
                         let json = try await self.post(b)
                         reply.usage.add(APIUsage(json: json["usage"] as? [String: Any]))
@@ -336,7 +343,7 @@ final class AnthropicClient {
                 log.notice("chat turn paused after a search; resuming")
                 continue
             }
-            if stop == "tool_use", let captureScreen {
+            if stop == "tool_use" {
                 // The model called a client tool. Its turn so far is one assistant message; the results go
                 // back as the next user message, and the turn continues in a new assistant message.
                 let uses = blocks.filter { ($0["type"] as? String) == "tool_use" }
@@ -346,7 +353,7 @@ final class AnthropicClient {
                 current = []
                 var results: [[String: Any]] = []
                 for use in uses {
-                    results.append(await toolResult(for: use, reply: &reply, captureScreen: captureScreen))
+                    results.append(await toolResult(for: use, reply: &reply, captureScreen: captureScreen, noteTurn: noteTurn))
                 }
                 reply.transcript.append(["role": "user", "content": results])
                 continue
@@ -370,12 +377,15 @@ final class AnthropicClient {
     /// Runs one client tool call and builds its `tool_result` block. Failures go back to the model as error
     /// results rather than ending the reply, so it can say what happened.
     private func toolResult(for use: [String: Any], reply: inout ChatReply,
-                            captureScreen: ScreenCaptureProvider) async -> [String: Any] {
+                            captureScreen: ScreenCaptureProvider?, noteTurn: [[String: Any]]?) async -> [String: Any] {
         let id = use["id"] as? String ?? ""
         func failure(_ message: String) -> [String: Any] {
             ["type": "tool_result", "tool_use_id": id, "is_error": true, "content": message]
         }
-        guard (use["name"] as? String) == AnthropicClient.captureToolName else {
+        if (use["name"] as? String) == LLMContact.noteToolName {
+            return AnthropicClient.noteResult(id: id, noteTurn: noteTurn)
+        }
+        guard (use["name"] as? String) == AnthropicClient.captureToolName, let captureScreen else {
             return failure("Unknown tool.")
         }
         guard reply.captures < AnthropicClient.maxCapturesPerReply else {
@@ -394,6 +404,19 @@ final class AnthropicClient {
             log.error("chat: screenshot for the model failed: \(error.localizedDescription, privacy: .public)")
             return failure("Screenshot failed: \(error.localizedDescription)")
         }
+    }
+
+    /// The `tool_result` for a note_to_eli call in a tool loop. The inbox check already recorded the note; its
+    /// acknowledgement text is in the tool-result message of `noteTurn` (what `llm_contact.py check` printed as
+    /// `continue`). Without one the check did not run or did not record, and the model is told so rather than
+    /// that the note was delivered.
+    static func noteResult(id: String, noteTurn: [[String: Any]]?) -> [String: Any] {
+        let results = noteTurn?.last?["content"] as? [[String: Any]] ?? []
+        if let text = results.first(where: { ($0["tool_use_id"] as? String) == id })?["content"] as? String {
+            return ["type": "tool_result", "tool_use_id": id, "content": text]
+        }
+        return ["type": "tool_result", "tool_use_id": id, "is_error": true,
+                "content": "The note could not be recorded just now. Nothing has stopped: please carry on with the task."]
     }
 
     /// One streamed request. Content blocks are rebuilt from the events so they can be sent back verbatim.
@@ -501,15 +524,15 @@ final class AnthropicClient {
         return (stopReason, blocks.filter { !$0.isEmpty })
     }
 
-    /// Cheap connectivity/key check. Even this carries the shared preamble and the contact_eli tool.
+    /// Cheap connectivity/key check. Even this carries the shared preamble and the contact_eli and note_to_eli tools.
     func ping(model: String) async throws -> String {
         let body: [String: Any] = [
             "model": model, "max_tokens": 64,
             "system": try LLMContact.systemPrompt(""),
-            "tools": [try LLMContact.contactTool()],
+            "tools": try LLMContact.contactTools(),
             "messages": [["role": "user", "content": "Reply with the single word OK."]],
         ]
-        let (json, _) = try await AnthropicClient.checkContact(body: body, response: try await post(body)) { b, _ in
+        let (json, _, _) = try await AnthropicClient.checkContact(body: body, response: try await post(body)) { b, _ in
             try await self.post(b)
         }
         let blocks = json["content"] as? [[String: Any]] ?? []
